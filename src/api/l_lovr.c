@@ -18,6 +18,9 @@ const luaL_Reg lovrModules[] = {
 #ifdef LOVR_ENABLE_FILESYSTEM
   { "lovr.filesystem", luaopen_lovr_filesystem },
 #endif
+#ifdef LOVR_ENABLE_GPU
+  { "lovr.gpu", luaopen_lovr_gpu },
+#endif
 #ifdef LOVR_ENABLE_GRAPHICS
   { "lovr.graphics", luaopen_lovr_graphics },
 #endif

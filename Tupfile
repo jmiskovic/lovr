@@ -3,6 +3,7 @@ include_rules
 SRC += src/main.c
 SRC += src/core/arr.c
 SRC += src/core/fs.c
+SRC += src/core/gpu_@(GPU_BACKEND).c
 SRC += src/core/maf.c
 SRC += src/core/map.c
 SRC += src/core/os_$(PLATFORM).c
@@ -34,6 +35,9 @@ SRC_@(EVENT) += src/api/l_event.c
 
 SRC_@(FILESYSTEM) += src/modules/filesystem/*.c
 SRC_@(FILESYSTEM) += src/api/l_filesystem.c
+
+SRC_@(GPU) += src/modules/gpu/gpu.c
+SRC_@(GPU) += src/api/l_gpu.c
 
 SRC_@(GRAPHICS) += src/modules/graphics/*.c
 SRC_@(GRAPHICS) += src/resources/shaders.c

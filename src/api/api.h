@@ -15,6 +15,7 @@ LOVR_EXPORT int luaopen_lovr_data(lua_State* L);
 LOVR_EXPORT int luaopen_lovr_event(lua_State* L);
 LOVR_EXPORT int luaopen_lovr_filesystem(lua_State* L);
 LOVR_EXPORT int luaopen_lovr_graphics(lua_State* L);
+LOVR_EXPORT int luaopen_lovr_gpu(lua_State* L);
 LOVR_EXPORT int luaopen_lovr_headset(lua_State* L);
 LOVR_EXPORT int luaopen_lovr_math(lua_State* L);
 LOVR_EXPORT int luaopen_lovr_physics(lua_State* L);
