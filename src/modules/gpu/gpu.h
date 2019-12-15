@@ -4,3 +4,5 @@
 
 bool lovrGpuInit2();
 void lovrGpuDestroy2();
+void lovrGpuBeginFrame();
+void lovrGpuEndFrame();
