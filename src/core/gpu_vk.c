@@ -96,6 +96,12 @@ static struct {
 // TODO currently there is a bug where condemning a resource outside of begin/end frame will
 // immediately purge it on the next call to begin_frame (it should somehow get added to the previous
 // frame's freelist, ugh, maybe advance frame index in begin_frame instead of end_frame)
+// TODO even though this is fairly lightweight it might be worth doing some object tracking to see
+// if you actually need to delay the destruction, and try to destroy it immediately when possible.
+// Because Lua objects are GC'd we probably already have our own delay and could get away with
+// skipping the freelist a lot of the time.  Also you might need to track object access anyway for
+// barriers, so this could wombo combo with the condemnation.  It might be complicated though if you
+// have to track access across multiple frames.
 static void gpu_condemn(VkObjectType type, void* handle) {
   gpu_freelist* freelist = &state.frames[state.frame].freelist;
 
