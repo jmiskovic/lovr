@@ -41,6 +41,10 @@
   X(vkDestroyBuffer);\
   X(vkGetBufferMemoryRequirements);\
   X(vkBindBufferMemory);\
+  X(vkCreateImage);\
+  X(vkDestroyImage);\
+  X(vkGetImageMemoryRequirements);\
+  X(vkBindImageMemory);\
   X(vkAllocateMemory);\
   X(vkFreeMemory)
 
@@ -57,6 +61,11 @@ GPU_FOREACH_DEVICE(GPU_DECLARE);
 
 struct gpu_buffer {
   VkBuffer handle;
+  VkDeviceMemory memory;
+};
+
+struct gpu_texture {
+  VkImage handle;
   VkDeviceMemory memory;
 };
 
@@ -85,6 +94,7 @@ static struct {
   VkDevice device;
   VkQueue queue;
   VkCommandPool commandPool;
+  VkCommandBuffer cmd;
   gpu_frame frames[2];
   uint32_t frame;
 } state;
@@ -123,6 +133,7 @@ static void gpu_purge(gpu_frame* frame) {
     gpu_ref* ref = &frame->freelist.data[i];
     switch (ref->type) {
       case VK_OBJECT_TYPE_BUFFER: vkDestroyBuffer(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_IMAGE: vkDestroyImage(state.device, ref->handle, NULL); break;
       case VK_OBJECT_TYPE_DEVICE_MEMORY: vkFreeMemory(state.device, ref->handle, NULL); break;
       default: /* Unreachable */ break;
     }
@@ -286,7 +297,8 @@ void gpu_begin_frame() {
 
   gpu_purge(frame);
 
-  if (vkBeginCommandBuffer(frame->commandBuffer, &beginfo)) {
+  state.cmd = frame->commandBuffer;
+  if (vkBeginCommandBuffer(state.cmd, &beginfo)) {
     // OOM
   }
 }
@@ -300,9 +312,8 @@ void gpu_end_frame() {
 
   VkSubmitInfo submitInfo = {
     .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-    .commandBufferCount = 1,
     .pCommandBuffers = &frame->commandBuffer,
-
+    .commandBufferCount = 1
   };
 
   if (vkQueueSubmit(state.queue, 1, &submitInfo, frame->fence)) {
@@ -316,25 +327,25 @@ size_t gpu_sizeof_buffer() {
   return sizeof(gpu_buffer);
 }
 
-bool gpu_buffer_init(gpu_buffer* buffer, const gpu_buffer_info* info) {
+bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
   buffer->handle = VK_NULL_HANDLE;
   buffer->memory = VK_NULL_HANDLE;
 
-  uint32_t usage = info->usage ? info->usage : ~0u;
+  VkBufferUsageFlags usage =
+    ((!info->usage || info->usage & GPU_BUFFER_USAGE_VERTEX) ? VK_BUFFER_USAGE_VERTEX_BUFFER_BIT : 0) |
+    ((!info->usage || info->usage & GPU_BUFFER_USAGE_INDEX) ? VK_BUFFER_USAGE_INDEX_BUFFER_BIT : 0) |
+    ((!info->usage || info->usage & GPU_BUFFER_USAGE_UNIFORM) ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT : 0) |
+    ((!info->usage || info->usage & GPU_BUFFER_USAGE_COMPUTE) ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0) |
+    ((!info->usage || info->usage & GPU_BUFFER_USAGE_COPY_SRC) ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT : 0) |
+    ((!info->usage || info->usage & GPU_BUFFER_USAGE_COPY_DST) ? VK_BUFFER_USAGE_TRANSFER_DST_BIT : 0);
 
-  VkBufferCreateInfo createInfo = {
+  VkBufferCreateInfo bufferInfo = {
     .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
     .size = info->size,
-    .usage =
-      ((usage & GPU_BUFFER_COPY_SRC) ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT : 0) |
-      ((usage & GPU_BUFFER_COPY_DST) ? VK_BUFFER_USAGE_TRANSFER_DST_BIT : 0) |
-      ((usage & GPU_BUFFER_VERTEX) ? VK_BUFFER_USAGE_VERTEX_BUFFER_BIT : 0) |
-      ((usage & GPU_BUFFER_INDEX) ? VK_BUFFER_USAGE_INDEX_BUFFER_BIT : 0) |
-      ((usage & GPU_BUFFER_UNIFORM) ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT : 0) |
-      ((usage & GPU_BUFFER_STORAGE) ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0)
+    .usage = usage
   };
 
-  if (vkCreateBuffer(state.device, &createInfo, NULL, &buffer->handle)) {
+  if (vkCreateBuffer(state.device, &bufferInfo, NULL, &buffer->handle)) {
     return false;
   }
 
@@ -355,13 +366,13 @@ bool gpu_buffer_init(gpu_buffer* buffer, const gpu_buffer_info* info) {
     return false;
   }
 
-  VkMemoryAllocateInfo allocateInfo = {
+  VkMemoryAllocateInfo memoryInfo = {
     .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
     .allocationSize = requirements.size,
     .memoryTypeIndex = type
   };
 
-  if (vkAllocateMemory(state.device, &allocateInfo, NULL, &buffer->memory)) {
+  if (vkAllocateMemory(state.device, &memoryInfo, NULL, &buffer->memory)) {
     vkDestroyBuffer(state.device, buffer->handle, NULL);
     return false;
   }
@@ -378,4 +389,103 @@ bool gpu_buffer_init(gpu_buffer* buffer, const gpu_buffer_info* info) {
 void gpu_buffer_destroy(gpu_buffer* buffer) {
   if (buffer->handle) gpu_condemn(VK_OBJECT_TYPE_BUFFER, buffer->handle);
   if (buffer->memory) gpu_condemn(VK_OBJECT_TYPE_DEVICE_MEMORY, buffer->memory);
+  buffer->handle = VK_NULL_HANDLE;
+  buffer->memory = VK_NULL_HANDLE;
+}
+
+size_t gpu_sizeof_texture() {
+  return sizeof(gpu_texture);
+}
+
+bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
+  texture->handle = VK_NULL_HANDLE;
+  texture->memory = VK_NULL_HANDLE;
+
+  VkImageType type;
+  switch (info->type) {
+    case GPU_TEXTURE_TYPE_2D: type = VK_IMAGE_TYPE_2D; break;
+    case GPU_TEXTURE_TYPE_3D: type = VK_IMAGE_TYPE_3D; break;
+    case GPU_TEXTURE_TYPE_CUBE: type = VK_IMAGE_TYPE_2D; break;
+    case GPU_TEXTURE_TYPE_ARRAY: type = VK_IMAGE_TYPE_3D; break;
+    default: return false;
+  }
+
+  VkFormat format;
+  switch (info->format) {
+    case GPU_TEXTURE_FORMAT_RGBA8: format = VK_FORMAT_R8G8B8A8_UNORM; break;
+    default: return false;
+  }
+
+  VkImageCreateFlags flags =
+    (info->type == GPU_TEXTURE_TYPE_CUBE ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0) |
+    (info->type == GPU_TEXTURE_TYPE_ARRAY ? VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT : 0);
+
+  VkImageUsageFlags usage =
+    ((info->usage & GPU_TEXTURE_USAGE_RENDER) ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0) | // TODO check depth format
+    ((info->usage & GPU_TEXTURE_USAGE_SAMPLER) ? VK_IMAGE_USAGE_SAMPLED_BIT : 0) |
+    ((info->usage & GPU_TEXTURE_USAGE_COMPUTE) ? VK_IMAGE_USAGE_STORAGE_BIT : 0) |
+    ((info->usage & GPU_TEXTURE_USAGE_COPY_SRC) ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0) |
+    ((info->usage & GPU_TEXTURE_USAGE_COPY_DST) ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : 0);
+
+  VkImageCreateInfo imageInfo = {
+    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+    .flags = flags,
+    .imageType = type,
+    .format = format,
+    .extent.width = info->size[0],
+    .extent.height = info->size[1],
+    .extent.depth = info->size[2],
+    .mipLevels = info->mipmaps,
+    .arrayLayers = info->layers,
+    .samples = VK_SAMPLE_COUNT_1_BIT,
+    .tiling = VK_IMAGE_TILING_OPTIMAL,
+    .usage = usage
+  };
+
+  if (vkCreateImage(state.device, &imageInfo, NULL, &texture->handle)) {
+    return false;
+  }
+
+  VkMemoryRequirements requirements;
+  vkGetImageMemoryRequirements(state.device, texture->handle, &requirements);
+
+  uint32_t memoryType = ~0u;
+  for (uint32_t i = 0; i < state.memoryProperties.memoryTypeCount; i++) {
+    uint32_t flags = state.memoryProperties.memoryTypes[i].propertyFlags;
+    if ((requirements.memoryTypeBits & (1 << i)) && (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+      memoryType = i;
+      break;
+    }
+  }
+
+  if (memoryType == ~0u) {
+    vkDestroyImage(state.device, texture->handle, NULL);
+    return false;
+  }
+
+  VkMemoryAllocateInfo memoryInfo = {
+    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+    .allocationSize = requirements.size,
+    .memoryTypeIndex = memoryType
+  };
+
+  if (vkAllocateMemory(state.device, &memoryInfo, NULL, &texture->memory)) {
+    vkDestroyImage(state.device, texture->handle, NULL);
+    return false;
+  }
+
+  if (vkBindImageMemory(state.device, texture->handle, texture->memory, 0)) {
+    vkDestroyImage(state.device, texture->handle, NULL);
+    vkFreeMemory(state.device, texture->memory, NULL);
+    return false;
+  }
+
+  return true;
+}
+
+void gpu_texture_destroy(gpu_texture* texture) {
+  if (texture->handle) gpu_condemn(VK_OBJECT_TYPE_IMAGE, texture->handle);
+  if (texture->memory) gpu_condemn(VK_OBJECT_TYPE_DEVICE_MEMORY, texture->memory);
+  texture->handle = VK_NULL_HANDLE;
+  texture->memory = VK_NULL_HANDLE;
 }
