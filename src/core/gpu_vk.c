@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #define COUNTOF(x) (sizeof(x) / sizeof(x[0]))
+#define SCRATCHPAD_SIZE (16 * 1024 * 1024)
 
 // Functions that don't require an instance
 #define GPU_FOREACH_ANONYMOUS(X)\
@@ -41,12 +42,16 @@
   X(vkDestroyBuffer);\
   X(vkGetBufferMemoryRequirements);\
   X(vkBindBufferMemory);\
+  X(vkCmdCopyBuffer);\
   X(vkCreateImage);\
   X(vkDestroyImage);\
   X(vkGetImageMemoryRequirements);\
   X(vkBindImageMemory);\
+  X(vkCmdCopyBufferToImage);\
   X(vkAllocateMemory);\
-  X(vkFreeMemory)
+  X(vkFreeMemory);\
+  X(vkMapMemory);\
+  X(vkUnmapMemory)
 
 // Used to load/declare Vulkan functions without lots of clutter
 #define GPU_LOAD_ANONYMOUS(fn) fn = (PFN_##fn) vkGetInstanceProcAddr(NULL, #fn)
@@ -59,14 +64,24 @@ GPU_FOREACH_ANONYMOUS(GPU_DECLARE);
 GPU_FOREACH_INSTANCE(GPU_DECLARE);
 GPU_FOREACH_DEVICE(GPU_DECLARE);
 
+typedef struct {
+  uint16_t frame;
+  uint16_t scratchpad;
+  uint32_t offset;
+} gpu_mapping;
+
 struct gpu_buffer {
   VkBuffer handle;
   VkDeviceMemory memory;
+  gpu_mapping mapping;
+  uint64_t targetOffset;
+  uint64_t targetSize;
 };
 
 struct gpu_texture {
   VkImage handle;
   VkDeviceMemory memory;
+  VkImageLayout layout;
 };
 
 typedef struct {
@@ -81,15 +96,29 @@ typedef struct {
 } gpu_freelist;
 
 typedef struct {
+  VkBuffer buffer;
+  VkDeviceMemory memory;
+  void* data;
+} gpu_scratchpad;
+
+typedef struct {
   VkFence fence;
   VkCommandBuffer commandBuffer;
   gpu_freelist freelist;
+  struct gpu_pool {
+    gpu_scratchpad* list;
+    uint16_t count;
+    uint16_t current;
+    uint32_t cursor;
+  } pool;
 } gpu_frame;
 
 static struct {
   void* library;
   VkInstance instance;
   VkPhysicalDeviceMemoryProperties memoryProperties;
+  VkMemoryRequirements scratchpadMemoryRequirements;
+  uint32_t scratchpadMemoryType;
   uint32_t queueFamilyIndex;
   VkDevice device;
   VkQueue queue;
@@ -98,6 +127,8 @@ static struct {
   gpu_frame frames[2];
   uint32_t frame;
 } state;
+
+static uint32_t findMemoryType(uint32_t bits, uint32_t mask);
 
 // Condemns an object, marking it for deletion (objects can't be destroyed while the GPU is still
 // using them).  Condemned objects are purged in gpu_begin_frame after waiting on a fence.  We have
@@ -139,6 +170,73 @@ static void gpu_purge(gpu_frame* frame) {
     }
   }
   frame->freelist.length = 0;
+}
+
+static uint8_t* gpu_map(uint64_t size, gpu_mapping* mapping) {
+  struct gpu_pool* pool = &state.frames[state.frame].pool;
+  gpu_scratchpad* scratchpad = &pool->list[pool->current];
+
+  if (pool->count == 0 || pool->cursor + size > SCRATCHPAD_SIZE) {
+    if (size > SCRATCHPAD_SIZE) {
+      return NULL; // Unsatisfiable
+    }
+
+    pool->cursor = 0;
+    pool->current = pool->count++;
+    pool->list = realloc(pool->list, pool->count * sizeof(gpu_scratchpad));
+    scratchpad = &pool->list[pool->current];
+
+    if (!pool->list) {
+      return NULL; // OOM
+    }
+
+    // Create buffer
+    VkBufferCreateInfo bufferInfo = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = SCRATCHPAD_SIZE,
+      .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    };
+
+    if (vkCreateBuffer(state.device, &bufferInfo, NULL, &scratchpad->buffer)) {
+      return NULL;
+    }
+
+    // Get memory requirements, once
+    if (state.scratchpadMemoryRequirements.size == 0) {
+      uint32_t mask = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+      vkGetBufferMemoryRequirements(state.device, scratchpad->buffer, &state.scratchpadMemoryRequirements);
+      state.scratchpadMemoryType = findMemoryType(state.scratchpadMemoryRequirements.memoryTypeBits, mask);
+
+      if (state.scratchpadMemoryType == ~0u) {
+        vkDestroyBuffer(state.device, scratchpad->buffer, NULL);
+        return NULL; // PANIC
+      }
+    }
+
+    // Allocate, bind
+    VkMemoryAllocateInfo memoryInfo = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = state.scratchpadMemoryRequirements.size,
+      .memoryTypeIndex = state.scratchpadMemoryType
+    };
+
+    if (vkAllocateMemory(state.device, &memoryInfo, NULL, &scratchpad->memory)) {
+      vkDestroyBuffer(state.device, scratchpad->buffer, NULL);
+      return NULL; // OOM
+    }
+
+    if (vkBindBufferMemory(state.device, scratchpad->buffer, scratchpad->memory, 0)) {
+      vkDestroyBuffer(state.device, scratchpad->buffer, NULL);
+      vkFreeMemory(state.device, scratchpad->memory, NULL);
+      return NULL; // PANIC
+    }
+
+    if (vkMapMemory(state.device, scratchpad->memory, 0, VK_WHOLE_SIZE, 0, &scratchpad->data)) {
+      return NULL; // OOM
+    }
+  }
+
+  return (uint8_t*) scratchpad->data + pool->cursor;
 }
 
 bool gpu_init() {
@@ -267,10 +365,21 @@ void gpu_destroy() {
   if (state.device) vkDeviceWaitIdle(state.device);
   for (uint32_t i = 0; i < COUNTOF(state.frames); i++) {
     gpu_frame* frame = &state.frames[i];
+
     gpu_purge(frame);
+    free(frame->freelist.data);
+
     if (frame->fence) vkDestroyFence(state.device, frame->fence, NULL);
     if (frame->commandBuffer) vkFreeCommandBuffers(state.device, state.commandPool, 1, &frame->commandBuffer);
-    free(frame->freelist.data);
+
+    for (uint32_t j = 0; j < frame->pool.count; j++) {
+      gpu_scratchpad* scratchpad = &frame->pool.list[j];
+      vkDestroyBuffer(state.device, scratchpad->buffer, NULL);
+      vkUnmapMemory(state.device, scratchpad->memory);
+      vkFreeMemory(state.device, scratchpad->memory, NULL);
+    }
+
+    free(frame->pool.list);
   }
   if (state.commandPool) vkDestroyCommandPool(state.device, state.commandPool, NULL);
   if (state.device) vkDestroyDevice(state.device, NULL);
@@ -295,6 +404,11 @@ void gpu_begin_frame() {
     // OOM
   }
 
+  // Recycle staging buffers
+  frame->pool.current = 0;
+  frame->pool.cursor = 0;
+
+  // Purge condemned resources
   gpu_purge(frame);
 
   state.cmd = frame->commandBuffer;
@@ -328,8 +442,7 @@ size_t gpu_sizeof_buffer() {
 }
 
 bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
-  buffer->handle = VK_NULL_HANDLE;
-  buffer->memory = VK_NULL_HANDLE;
+  memset(buffer, 0, sizeof(*buffer));
 
   VkBufferUsageFlags usage =
     ((!info->usage || info->usage & GPU_BUFFER_USAGE_VERTEX) ? VK_BUFFER_USAGE_VERTEX_BUFFER_BIT : 0) |
@@ -351,17 +464,9 @@ bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
 
   VkMemoryRequirements requirements;
   vkGetBufferMemoryRequirements(state.device, buffer->handle, &requirements);
+  uint32_t memoryType = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-  uint32_t type = ~0u;
-  for (uint32_t i = 0; i < state.memoryProperties.memoryTypeCount; i++) {
-    uint32_t flags = state.memoryProperties.memoryTypes[i].propertyFlags;
-    if ((requirements.memoryTypeBits & (1 << i)) && (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-      type = i;
-      break;
-    }
-  }
-
-  if (type == ~0u) {
+  if (memoryType == ~0u) {
     vkDestroyBuffer(state.device, buffer->handle, NULL);
     return false;
   }
@@ -369,7 +474,7 @@ bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
   VkMemoryAllocateInfo memoryInfo = {
     .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
     .allocationSize = requirements.size,
-    .memoryTypeIndex = type
+    .memoryTypeIndex = memoryType
   };
 
   if (vkAllocateMemory(state.device, &memoryInfo, NULL, &buffer->memory)) {
@@ -393,13 +498,35 @@ void gpu_buffer_destroy(gpu_buffer* buffer) {
   buffer->memory = VK_NULL_HANDLE;
 }
 
+uint8_t* gpu_buffer_map(gpu_buffer* buffer, uint64_t offset, uint64_t size) {
+  buffer->targetOffset = offset;
+  buffer->targetSize = size;
+  return gpu_map(size, &buffer->mapping);
+}
+
+void gpu_buffer_unmap(gpu_buffer* buffer) {
+  if (buffer->mapping.frame != state.frame) {
+    return;
+  }
+
+  VkBuffer source = state.frames[buffer->mapping.frame].pool.list[buffer->mapping.scratchpad].buffer;
+  VkBuffer destination = buffer->handle;
+
+  VkBufferCopy copy = {
+    .srcOffset = buffer->mapping.offset,
+    .dstOffset = buffer->targetOffset,
+    .size = buffer->targetSize
+  };
+
+  vkCmdCopyBuffer(state.cmd, source, destination, 1, &copy);
+}
+
 size_t gpu_sizeof_texture() {
   return sizeof(gpu_texture);
 }
 
 bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
-  texture->handle = VK_NULL_HANDLE;
-  texture->memory = VK_NULL_HANDLE;
+  memset(texture, 0, sizeof(*texture));
 
   VkImageType type;
   switch (info->type) {
@@ -448,15 +575,7 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
 
   VkMemoryRequirements requirements;
   vkGetImageMemoryRequirements(state.device, texture->handle, &requirements);
-
-  uint32_t memoryType = ~0u;
-  for (uint32_t i = 0; i < state.memoryProperties.memoryTypeCount; i++) {
-    uint32_t flags = state.memoryProperties.memoryTypes[i].propertyFlags;
-    if ((requirements.memoryTypeBits & (1 << i)) && (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-      memoryType = i;
-      break;
-    }
-  }
+  uint32_t memoryType = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
   if (memoryType == ~0u) {
     vkDestroyImage(state.device, texture->handle, NULL);
@@ -480,6 +599,8 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
     return false;
   }
 
+  texture->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
   return true;
 }
 
@@ -488,4 +609,46 @@ void gpu_texture_destroy(gpu_texture* texture) {
   if (texture->memory) gpu_condemn(VK_OBJECT_TYPE_DEVICE_MEMORY, texture->memory);
   texture->handle = VK_NULL_HANDLE;
   texture->memory = VK_NULL_HANDLE;
+}
+
+void gpu_texture_paste(gpu_texture* texture, uint8_t* data, uint64_t size, uint16_t offset[4], uint16_t extent[4], uint16_t mip) {
+  if (size > SCRATCHPAD_SIZE) {
+    // TODO loop or big boi staging buffer
+    return;
+  }
+
+  gpu_mapping mapping;
+  uint8_t* scratch = gpu_map(size, &mapping);
+  memcpy(data, scratch, size);
+
+  VkBuffer source = state.frames[mapping.frame].pool.list[mapping.scratchpad].buffer;
+  VkImage destination = texture->handle;
+
+  VkBufferImageCopy copy = {
+    .bufferOffset = mapping.offset,
+    .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+    .imageSubresource.mipLevel = mip,
+    .imageSubresource.baseArrayLayer = offset[3],
+    .imageSubresource.layerCount = extent[3],
+    .imageOffset.x = offset[0],
+    .imageOffset.y = offset[1],
+    .imageOffset.z = offset[2],
+    .imageExtent.width = extent[0],
+    .imageExtent.height = extent[1],
+    .imageExtent.depth = extent[2]
+  };
+
+  // TODO layout transition (barrier)
+
+  vkCmdCopyBufferToImage(state.cmd, source, destination, texture->layout, 1, &copy);
+}
+
+static uint32_t findMemoryType(uint32_t bits, uint32_t mask) {
+  for (uint32_t i = 0; i < state.memoryProperties.memoryTypeCount; i++) {
+    uint32_t flags = state.memoryProperties.memoryTypes[i].propertyFlags;
+    if ((flags & mask) == mask && (bits & (1 << i))) {
+      return i;
+    }
+  }
+  return ~0u;
 }
