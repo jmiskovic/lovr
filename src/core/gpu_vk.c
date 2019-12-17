@@ -239,7 +239,7 @@ static uint8_t* gpu_map(uint64_t size, gpu_mapping* mapping) {
   return (uint8_t*) scratchpad->data + pool->cursor;
 }
 
-bool gpu_init() {
+bool gpu_init(bool debug) {
   state.library = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL); // TODO cross platform
   PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr) dlsym(state.library, "vkGetInstanceProcAddr");
 
@@ -260,7 +260,7 @@ bool gpu_init() {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
       .apiVersion = VK_MAKE_VERSION(1, 1, 0)
     },
-    .enabledLayerCount = COUNTOF(layers),
+    .enabledLayerCount = debug ? COUNTOF(layers) : 0,
     .ppEnabledLayerNames = layers
   };
 

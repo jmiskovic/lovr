@@ -8,10 +8,10 @@ static struct {
   bool initialized;
 } state;
 
-bool lovrGpuInit2() {
+bool lovrGpuInit2(bool debug) {
   if (state.initialized) return false;
 
-  lovrAssert(gpu_init(), "Could not initialize gpu");
+  lovrAssert(gpu_init(debug), "Could not initialize gpu");
 
   return state.initialized = true;
 }

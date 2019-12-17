@@ -49,7 +49,7 @@ typedef struct {
   uint32_t usage;
 } gpu_texture_info;
 
-bool gpu_init();
+bool gpu_init(bool debug);
 void gpu_destroy();
 void gpu_begin_frame();
 void gpu_end_frame();
