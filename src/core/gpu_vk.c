@@ -8,6 +8,9 @@
 #define COUNTOF(x) (sizeof(x) / sizeof(x[0]))
 #define SCRATCHPAD_SIZE (16 * 1024 * 1024)
 #define VOIDP_TO_U64(x) (((union { uint64_t u; void* p; }) { .p = x }).u)
+#define GPU_THROW(s) state.config.callback(state.config.context, s, true)
+#define GPU_CHECK(c, s) if (!(c)) { GPU_THROW(s); }
+#define GPU_VK(r) if (r < 0) { state.config.callback(state.config.context, "Vulkan Error", true); }
 
 // Functions that don't require an instance
 #define GPU_FOREACH_ANONYMOUS(X)\
@@ -16,6 +19,8 @@
 // Functions that require an instance but don't require a device
 #define GPU_FOREACH_INSTANCE(X)\
   X(vkDestroyInstance);\
+  X(vkCreateDebugUtilsMessengerEXT);\
+  X(vkDestroyDebugUtilsMessengerEXT);\
   X(vkEnumeratePhysicalDevices);\
   X(vkGetPhysicalDeviceProperties);\
   X(vkGetPhysicalDeviceMemoryProperties);\
@@ -116,8 +121,10 @@ typedef struct {
 } gpu_frame;
 
 static struct {
+  gpu_config config;
   void* library;
   VkInstance instance;
+  VkDebugUtilsMessengerEXT messenger;
   VkPhysicalDeviceMemoryProperties memoryProperties;
   VkMemoryRequirements scratchpadMemoryRequirements;
   uint32_t scratchpadMemoryType;
@@ -132,6 +139,7 @@ static struct {
 
 static uint32_t findMemoryType(uint32_t bits, uint32_t mask);
 static void nickname(uint64_t object, VkObjectType type, const char* name);
+static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT flags, const VkDebugUtilsMessengerCallbackDataEXT* data, void* context);
 
 // Condemns an object, marking it for deletion (objects can't be destroyed while the GPU is still
 // using them).  Condemned objects are purged in gpu_begin_frame after waiting on a fence.  We have
@@ -152,9 +160,7 @@ static void gpu_condemn(VkObjectType type, void* handle) {
   if (freelist->length >= freelist->capacity) {
     freelist->capacity = freelist->capacity ? (freelist->capacity * 2) : 1;
     freelist->data = realloc(freelist->data, freelist->capacity * sizeof(*freelist->data));
-    if (!freelist->data) {
-      // OOM
-    }
+    GPU_CHECK(freelist->data, "Out of memory");
   }
 
   freelist->data[freelist->length++] = (gpu_ref) { type, handle };
@@ -169,7 +175,7 @@ static void gpu_purge(gpu_frame* frame) {
       case VK_OBJECT_TYPE_BUFFER: vkDestroyBuffer(state.device, ref->handle, NULL); break;
       case VK_OBJECT_TYPE_IMAGE: vkDestroyImage(state.device, ref->handle, NULL); break;
       case VK_OBJECT_TYPE_DEVICE_MEMORY: vkFreeMemory(state.device, ref->handle, NULL); break;
-      default: /* Unreachable */ break;
+      default: GPU_THROW("Unreachable"); break;
     }
   }
   frame->freelist.length = 0;
@@ -242,7 +248,9 @@ static uint8_t* gpu_map(uint64_t size, gpu_mapping* mapping) {
   return (uint8_t*) scratchpad->data + pool->cursor;
 }
 
-bool gpu_init(bool debug) {
+bool gpu_init(gpu_config* config) {
+  state.config = *config;
+
   state.library = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL); // TODO cross platform
   PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr) dlsym(state.library, "vkGetInstanceProcAddr");
 
@@ -250,10 +258,13 @@ bool gpu_init(bool debug) {
   GPU_FOREACH_ANONYMOUS(GPU_LOAD_ANONYMOUS);
 
   const char* layers[] = {
-    "VK_LAYER_LUNARG_standard_validation",
     "VK_LAYER_LUNARG_object_tracker",
     "VK_LAYER_LUNARG_core_validation",
     "VK_LAYER_LUNARG_parameter_validation"
+  };
+
+  const char* extensions[] = {
+    "VK_EXT_debug_utils"
   };
 
   // Instance
@@ -263,8 +274,10 @@ bool gpu_init(bool debug) {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
       .apiVersion = VK_MAKE_VERSION(1, 1, 0)
     },
-    .enabledLayerCount = debug ? COUNTOF(layers) : 0,
-    .ppEnabledLayerNames = layers
+    .enabledLayerCount = state.config.debug ? COUNTOF(layers) : 0,
+    .ppEnabledLayerNames = layers,
+    .enabledExtensionCount = state.config.debug ? COUNTOF(extensions) : 0,
+    .ppEnabledExtensionNames = extensions
   };
 
   if (vkCreateInstance(&instanceInfo, NULL, &state.instance)) {
@@ -273,6 +286,27 @@ bool gpu_init(bool debug) {
 
   // Load the instance functions
   GPU_FOREACH_INSTANCE(GPU_LOAD_INSTANCE);
+
+  // Debug callbacks
+  if (state.config.debug) {
+    VkDebugUtilsMessengerCreateInfoEXT messengerInfo = {
+      .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+      .messageSeverity =
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+      .messageType =
+        VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+      .pfnUserCallback = debugCallback,
+      .pUserData = state.config.context
+    };
+
+    if (vkCreateDebugUtilsMessengerEXT(state.instance, &messengerInfo, NULL, &state.messenger)) {
+      goto hell;
+    }
+  }
 
   // Device
   uint32_t deviceCount = 1;
@@ -386,6 +420,7 @@ void gpu_destroy() {
   }
   if (state.commandPool) vkDestroyCommandPool(state.device, state.commandPool, NULL);
   if (state.device) vkDestroyDevice(state.device, NULL);
+  if (state.messenger) vkDestroyDebugUtilsMessengerEXT(state.instance, state.messenger, NULL);
   if (state.instance) vkDestroyInstance(state.instance, NULL);
   dlclose(state.library);
   memset(&state, 0, sizeof(state));
@@ -661,16 +696,23 @@ static uint32_t findMemoryType(uint32_t bits, uint32_t mask) {
 }
 
 static void nickname(uint64_t handle, VkObjectType type, const char* name) {
-  if (!name || !state.debug) return;
+  if (state.config.debug && name) {
+    VkDebugUtilsObjectNameInfoEXT info = {
+      .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+      .objectType = type,
+      .objectHandle = handle,
+      .pObjectName = name
+    };
 
-  VkDebugUtilsObjectNameInfoEXT info = {
-    .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
-    .objectType = type,
-    .objectHandle = handle,
-    .pObjectName = name
-  };
-
-  if (vkSetDebugUtilsObjectNameEXT(state.device, &info)) {
-    // OOM
+    if (vkSetDebugUtilsObjectNameEXT(state.device, &info)) {
+      // OOM
+    }
   }
 }
+
+static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT flags, const VkDebugUtilsMessengerCallbackDataEXT* data, void* context) {
+  bool severe = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+  state.config.callback(state.config.context, data->pMessage, severe);
+  return VK_FALSE;
+}
+

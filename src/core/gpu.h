@@ -51,7 +51,15 @@ typedef struct {
   const char* name;
 } gpu_texture_info;
 
-bool gpu_init(bool debug);
+typedef void gpu_callback(void* context, const char* message, bool severe);
+
+typedef struct {
+  bool debug;
+  gpu_callback* callback;
+  void* context;
+} gpu_config;
+
+bool gpu_init(gpu_config* config);
 void gpu_destroy();
 void gpu_begin_frame();
 void gpu_end_frame();

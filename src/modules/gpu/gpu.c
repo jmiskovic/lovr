@@ -3,15 +3,30 @@
 #include "core/util.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 static struct {
   bool initialized;
 } state;
 
+void callback(void* context, const char* message, bool severe) {
+  if (severe) {
+    lovrThrow("GPU Error: %s", message);
+  } else {
+    fprintf(stdout, "%s\n", message);
+  }
+}
+
 bool lovrGpuInit2(bool debug) {
   if (state.initialized) return false;
 
-  lovrAssert(gpu_init(debug), "Could not initialize gpu");
+  gpu_config config = {
+    .debug = debug,
+    .callback = callback,
+    .context = NULL
+  };
+
+  lovrAssert(gpu_init(&config), "Could not initialize gpu");
 
   return state.initialized = true;
 }
