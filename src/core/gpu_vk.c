@@ -7,6 +7,7 @@
 
 #define COUNTOF(x) (sizeof(x) / sizeof(x[0]))
 #define SCRATCHPAD_SIZE (16 * 1024 * 1024)
+#define VOIDP_TO_U64(x) (((union { uint64_t u; void* p; }) { .p = x }).u)
 
 // Functions that don't require an instance
 #define GPU_FOREACH_ANONYMOUS(X)\
@@ -26,6 +27,7 @@
 
 // Functions that require a device
 #define GPU_FOREACH_DEVICE(X)\
+  X(vkSetDebugUtilsObjectNameEXT);\
   X(vkQueueSubmit);\
   X(vkDeviceWaitIdle);\
   X(vkCreateCommandPool);\
@@ -129,6 +131,7 @@ static struct {
 } state;
 
 static uint32_t findMemoryType(uint32_t bits, uint32_t mask);
+static void nickname(uint64_t object, VkObjectType type, const char* name);
 
 // Condemns an object, marking it for deletion (objects can't be destroyed while the GPU is still
 // using them).  Condemned objects are purged in gpu_begin_frame after waiting on a fence.  We have
@@ -462,6 +465,8 @@ bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
     return false;
   }
 
+  nickname(VOIDP_TO_U64(buffer->handle), VK_OBJECT_TYPE_BUFFER, info->name);
+
   VkMemoryRequirements requirements;
   vkGetBufferMemoryRequirements(state.device, buffer->handle, &requirements);
   uint32_t memoryType = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -573,6 +578,8 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
     return false;
   }
 
+  nickname(VOIDP_TO_U64(texture->handle), VK_OBJECT_TYPE_IMAGE, info->name);
+
   VkMemoryRequirements requirements;
   vkGetImageMemoryRequirements(state.device, texture->handle, &requirements);
   uint32_t memoryType = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -651,4 +658,19 @@ static uint32_t findMemoryType(uint32_t bits, uint32_t mask) {
     }
   }
   return ~0u;
+}
+
+static void nickname(uint64_t handle, VkObjectType type, const char* name) {
+  if (!name || !state.debug) return;
+
+  VkDebugUtilsObjectNameInfoEXT info = {
+    .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+    .objectType = type,
+    .objectHandle = handle,
+    .pObjectName = name
+  };
+
+  if (vkSetDebugUtilsObjectNameEXT(state.device, &info)) {
+    // OOM
+  }
 }
