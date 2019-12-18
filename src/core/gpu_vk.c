@@ -492,8 +492,8 @@ bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
     ((!info->usage || info->usage & GPU_BUFFER_USAGE_INDEX) ? VK_BUFFER_USAGE_INDEX_BUFFER_BIT : 0) |
     ((!info->usage || info->usage & GPU_BUFFER_USAGE_UNIFORM) ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT : 0) |
     ((!info->usage || info->usage & GPU_BUFFER_USAGE_COMPUTE) ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0) |
-    ((!info->usage || info->usage & GPU_BUFFER_USAGE_COPY_SRC) ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT : 0) |
-    ((!info->usage || info->usage & GPU_BUFFER_USAGE_COPY_DST) ? VK_BUFFER_USAGE_TRANSFER_DST_BIT : 0);
+    ((!info->usage || info->usage & GPU_BUFFER_USAGE_COPY) ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT : 0) |
+    ((!info->usage || info->usage & GPU_BUFFER_USAGE_PASTE) ? VK_BUFFER_USAGE_TRANSFER_DST_BIT : 0);
 
   VkBufferCreateInfo bufferInfo = {
     .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -596,8 +596,8 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
     ((info->usage & GPU_TEXTURE_USAGE_RENDER) ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0) | // TODO check depth format
     ((info->usage & GPU_TEXTURE_USAGE_SAMPLER) ? VK_IMAGE_USAGE_SAMPLED_BIT : 0) |
     ((info->usage & GPU_TEXTURE_USAGE_COMPUTE) ? VK_IMAGE_USAGE_STORAGE_BIT : 0) |
-    ((info->usage & GPU_TEXTURE_USAGE_COPY_SRC) ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0) |
-    ((info->usage & GPU_TEXTURE_USAGE_COPY_DST) ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : 0);
+    ((info->usage & GPU_TEXTURE_USAGE_COPY) ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0) |
+    ((info->usage & GPU_TEXTURE_USAGE_PASTE) ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : 0);
 
   VkImageCreateInfo imageInfo = {
     .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,

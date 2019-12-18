@@ -9,20 +9,20 @@ typedef struct gpu_texture gpu_texture;
 typedef struct gpu_canvas gpu_canvas;
 
 typedef enum {
-  GPU_BUFFER_USAGE_VERTEX   = (1 << 0),
-  GPU_BUFFER_USAGE_INDEX    = (1 << 1),
-  GPU_BUFFER_USAGE_UNIFORM  = (1 << 2),
-  GPU_BUFFER_USAGE_COMPUTE  = (1 << 3),
-  GPU_BUFFER_USAGE_COPY_SRC = (1 << 4),
-  GPU_BUFFER_USAGE_COPY_DST = (1 << 5)
+  GPU_BUFFER_USAGE_VERTEX  = (1 << 0),
+  GPU_BUFFER_USAGE_INDEX   = (1 << 1),
+  GPU_BUFFER_USAGE_UNIFORM = (1 << 2),
+  GPU_BUFFER_USAGE_COMPUTE = (1 << 3),
+  GPU_BUFFER_USAGE_COPY    = (1 << 4),
+  GPU_BUFFER_USAGE_PASTE   = (1 << 5)
 } gpu_buffer_usage;
 
 typedef enum {
-  GPU_TEXTURE_USAGE_RENDER   = (1 << 0),
-  GPU_TEXTURE_USAGE_SAMPLER  = (1 << 1),
-  GPU_TEXTURE_USAGE_COMPUTE  = (1 << 2),
-  GPU_TEXTURE_USAGE_COPY_SRC = (1 << 3),
-  GPU_TEXTURE_USAGE_COPY_DST = (1 << 4)
+  GPU_TEXTURE_USAGE_RENDER  = (1 << 0),
+  GPU_TEXTURE_USAGE_SAMPLER = (1 << 1),
+  GPU_TEXTURE_USAGE_COMPUTE = (1 << 2),
+  GPU_TEXTURE_USAGE_COPY    = (1 << 3),
+  GPU_TEXTURE_USAGE_PASTE   = (1 << 4)
 } gpu_texture_usage;
 
 typedef enum {
