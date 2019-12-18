@@ -91,6 +91,11 @@ struct gpu_texture {
   VkImageLayout layout;
 };
 
+struct gpu_canvas {
+  VkRenderPass renderPass;
+  VkFramebuffer framebuffer;
+};
+
 typedef struct {
   VkObjectType type;
   void* handle;
@@ -685,6 +690,18 @@ void gpu_texture_paste(gpu_texture* texture, uint8_t* data, uint64_t size, uint1
   vkCmdCopyBufferToImage(state.cmd, source, destination, texture->layout, 1, &copy);
 }
 
+size_t gpu_sizeof_canvas() {
+  return sizeof(gpu_canvas);
+}
+
+bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info) {
+  return false;
+}
+
+void gpu_canvas_destroy(gpu_canvas* canvas) {
+  //
+}
+
 static uint32_t findMemoryType(uint32_t bits, uint32_t mask) {
   for (uint32_t i = 0; i < state.memoryProperties.memoryTypeCount; i++) {
     uint32_t flags = state.memoryProperties.memoryTypes[i].propertyFlags;
@@ -715,4 +732,3 @@ static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, V
   state.config.callback(state.config.context, data->pMessage, severe);
   return VK_FALSE;
 }
-

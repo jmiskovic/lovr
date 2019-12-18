@@ -6,6 +6,7 @@
 
 typedef struct gpu_buffer gpu_buffer;
 typedef struct gpu_texture gpu_texture;
+typedef struct gpu_canvas gpu_canvas;
 
 typedef enum {
   GPU_BUFFER_USAGE_VERTEX   = (1 << 0),
@@ -51,6 +52,10 @@ typedef struct {
   const char* name;
 } gpu_texture_info;
 
+typedef struct {
+  uint32_t attachmentCount;
+} gpu_canvas_info;
+
 typedef void gpu_callback(void* context, const char* message, bool severe);
 
 typedef struct {
@@ -74,3 +79,7 @@ size_t gpu_sizeof_texture();
 bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info);
 void gpu_texture_destroy(gpu_texture* texture);
 void gpu_texture_paste(gpu_texture* texture, uint8_t* data, uint64_t size, uint16_t offset[4], uint16_t extent[4], uint16_t mip);
+
+size_t gpu_sizeof_canvas();
+bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info);
+void gpu_canvas_destroy(gpu_canvas* canvas);
