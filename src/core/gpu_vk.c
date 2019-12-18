@@ -45,6 +45,7 @@
   X(vkDestroyFence);\
   X(vkWaitForFences);\
   X(vkResetFences);\
+  X(vkCmdPipelineBarrier);\
   X(vkCreateBuffer);\
   X(vkDestroyBuffer);\
   X(vkGetBufferMemoryRequirements);\
@@ -60,7 +61,11 @@
   X(vkMapMemory);\
   X(vkUnmapMemory);\
   X(vkCreateRenderPass);\
-  X(vkDestroyRenderPass)
+  X(vkDestroyRenderPass);\
+  X(vkCreateImageView);\
+  X(vkDestroyImageView);\
+  X(vkCreateFramebuffer);\
+  X(vkDestroyFramebuffer)
 
 // Used to load/declare Vulkan functions without lots of clutter
 #define GPU_LOAD_ANONYMOUS(fn) fn = (PFN_##fn) vkGetInstanceProcAddr(NULL, #fn)
@@ -89,9 +94,13 @@ struct gpu_buffer {
 
 struct gpu_texture {
   VkImage handle;
-  VkDeviceMemory memory;
   VkImageLayout layout;
+  VkDeviceMemory memory;
+  VkImageView view;
+  gpu_texture* source;
+  gpu_texture_type type;
   VkFormat format;
+  VkImageAspectFlagBits aspect;
 };
 
 struct gpu_canvas {
@@ -146,7 +155,10 @@ static struct {
 } state;
 
 static uint32_t findMemoryType(uint32_t bits, uint32_t mask);
+static VkFormat convertTextureFormat(gpu_texture_format format);
+static bool isDepthFormat(gpu_texture_format format);
 static VkAttachmentLoadOp convertLoadOp(bool load, bool clear);
+static void setLayout(gpu_texture* texture, VkImageLayout layout, VkPipelineStageFlags nextStages, VkAccessFlags nextActions);
 static void nickname(uint64_t object, VkObjectType type, const char* name);
 static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT flags, const VkDebugUtilsMessengerCallbackDataEXT* data, void* context);
 static const char* getErrorString(VkResult result);
@@ -184,8 +196,10 @@ static void gpu_purge(gpu_frame* frame) {
     switch (ref->type) {
       case VK_OBJECT_TYPE_BUFFER: vkDestroyBuffer(state.device, ref->handle, NULL); break;
       case VK_OBJECT_TYPE_IMAGE: vkDestroyImage(state.device, ref->handle, NULL); break;
-      case VK_OBJECT_TYPE_RENDER_PASS: vkDestroyRenderPass(state.device, ref->handle, NULL); break;
       case VK_OBJECT_TYPE_DEVICE_MEMORY: vkFreeMemory(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_IMAGE_VIEW: vkDestroyImageView(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_RENDER_PASS: vkDestroyRenderPass(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_FRAMEBUFFER: vkDestroyFramebuffer(state.device, ref->handle, NULL); break;
       default: GPU_THROW("Unreachable"); break;
     }
   }
@@ -251,6 +265,9 @@ static uint8_t* gpu_map(uint64_t size, gpu_mapping* mapping) {
     }
   }
 
+  mapping->frame = state.frame;
+  mapping->offset = pool->cursor;
+  mapping->scratchpad = pool->current;
   return (uint8_t*) scratchpad->data + pool->cursor;
 }
 
@@ -568,17 +585,17 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
     default: return false;
   }
 
-  switch (info->format) {
-    case GPU_TEXTURE_FORMAT_RGBA8: texture->format = VK_FORMAT_R8G8B8A8_UNORM; break;
-    default: return false;
-  }
+  bool depth = isDepthFormat(info->format);
+  texture->format = convertTextureFormat(info->format);
+  texture->aspect = depth ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) : VK_IMAGE_ASPECT_COLOR_BIT;
 
   VkImageCreateFlags flags =
     (info->type == GPU_TEXTURE_TYPE_CUBE ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0) |
     (info->type == GPU_TEXTURE_TYPE_ARRAY ? VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT : 0);
 
   VkImageUsageFlags usage =
-    ((info->usage & GPU_TEXTURE_USAGE_RENDER) ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0) | // TODO check depth format
+    (((info->usage & GPU_TEXTURE_USAGE_RENDER) && !depth) ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0) |
+    (((info->usage & GPU_TEXTURE_USAGE_RENDER) && depth) ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : 0) |
     ((info->usage & GPU_TEXTURE_USAGE_SAMPLER) ? VK_IMAGE_USAGE_SAMPLED_BIT : 0) |
     ((info->usage & GPU_TEXTURE_USAGE_COMPUTE) ? VK_IMAGE_USAGE_STORAGE_BIT : 0) |
     ((info->usage & GPU_TEXTURE_USAGE_COPY) ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0) |
@@ -633,12 +650,58 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
 
   texture->layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
+  if (!gpu_texture_init_view(texture, texture, NULL)) {
+    vkDestroyImage(state.device, texture->handle, NULL);
+    vkFreeMemory(state.device, texture->memory, NULL);
+    return false;
+  }
+
+  return true;
+}
+
+bool gpu_texture_init_view(gpu_texture* texture, gpu_texture* source, gpu_texture_view_info* info) {
+  if (texture != source) {
+    texture->handle = VK_NULL_HANDLE;
+    texture->memory = VK_NULL_HANDLE;
+    texture->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    texture->source = source;
+    texture->type = info ? info->type : source->type;
+    texture->format = (info && info->format) ? convertTextureFormat(info->format) : source->format;
+    texture->aspect = source->aspect;
+  }
+
+  VkImageViewType type;
+  switch (texture->type) {
+    case GPU_TEXTURE_TYPE_2D: type = VK_IMAGE_VIEW_TYPE_2D; break;
+    case GPU_TEXTURE_TYPE_3D: type = VK_IMAGE_VIEW_TYPE_3D; break;
+    case GPU_TEXTURE_TYPE_CUBE: type = VK_IMAGE_VIEW_TYPE_CUBE; break;
+    case GPU_TEXTURE_TYPE_ARRAY: type = VK_IMAGE_VIEW_TYPE_2D_ARRAY; break;
+    default: return false;
+  }
+
+  VkImageViewCreateInfo createInfo = {
+    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+    .image = source->handle,
+    .viewType = type,
+    .format = texture->format,
+    .subresourceRange = {
+      .aspectMask = texture->aspect,
+      .baseMipLevel = info ? info->baseMipmap : 0,
+      .levelCount = (info && info->mipmapCount) ? info->mipmapCount : VK_REMAINING_MIP_LEVELS,
+      .baseArrayLayer = info ? info->baseLayer : 0,
+      .layerCount = (info && info->layerCount) ? info->layerCount : VK_REMAINING_ARRAY_LAYERS
+    }
+  };
+
+  GPU_VK(vkCreateImageView(state.device, &createInfo, NULL, &texture->view));
+
   return true;
 }
 
 void gpu_texture_destroy(gpu_texture* texture) {
   if (texture->handle) gpu_condemn(VK_OBJECT_TYPE_IMAGE, texture->handle), texture->handle = VK_NULL_HANDLE;
   if (texture->memory) gpu_condemn(VK_OBJECT_TYPE_DEVICE_MEMORY, texture->memory), texture->memory = VK_NULL_HANDLE;
+  if (texture->view) gpu_condemn(VK_OBJECT_TYPE_IMAGE_VIEW, texture->view), texture->view = VK_NULL_HANDLE;
 }
 
 void gpu_texture_paste(gpu_texture* texture, uint8_t* data, uint64_t size, uint16_t offset[4], uint16_t extent[4], uint16_t mip) {
@@ -656,19 +719,15 @@ void gpu_texture_paste(gpu_texture* texture, uint8_t* data, uint64_t size, uint1
 
   VkBufferImageCopy copy = {
     .bufferOffset = mapping.offset,
-    .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+    .imageSubresource.aspectMask = texture->aspect,
     .imageSubresource.mipLevel = mip,
     .imageSubresource.baseArrayLayer = offset[3],
     .imageSubresource.layerCount = extent[3],
-    .imageOffset.x = offset[0],
-    .imageOffset.y = offset[1],
-    .imageOffset.z = offset[2],
-    .imageExtent.width = extent[0],
-    .imageExtent.height = extent[1],
-    .imageExtent.depth = extent[2]
+    .imageOffset = { offset[0], offset[1], offset[2] },
+    .imageExtent = { extent[0], extent[1], extent[2] }
   };
 
-  // TODO layout transition (barrier)
+  setLayout(texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
 
   vkCmdCopyBufferToImage(state.cmd, source, destination, texture->layout, 1, &copy);
 }
@@ -680,6 +739,7 @@ size_t gpu_sizeof_canvas() {
 bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info) {
   VkAttachmentDescription attachments[5];
   VkAttachmentReference references[5];
+  VkImageView imageViews[5];
   uint32_t colorCount = 0;
   uint32_t totalCount = 0;
 
@@ -688,13 +748,17 @@ bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info) {
       .format = info->color[i].texture->format,
       .samples = VK_SAMPLE_COUNT_1_BIT,
       .loadOp = convertLoadOp(info->color[i].load, info->color[i].clear),
-      .storeOp = info->color[i].save ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE
+      .storeOp = info->color[i].save ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .initialLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .finalLayout = VK_IMAGE_LAYOUT_GENERAL
     };
 
     references[i] = (VkAttachmentReference) {
       .attachment = i,
-      .layout = VK_IMAGE_LAYOUT_UNDEFINED
+      .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
     };
+
+    imageViews[i] = info->color[i].texture->view;
   }
 
   if (info->depthStencil.texture) {
@@ -706,13 +770,17 @@ bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info) {
       .loadOp = convertLoadOp(info->depthStencil.depth.load, info->depthStencil.depth.clear),
       .storeOp = info->depthStencil.depth.save ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
       .stencilLoadOp = convertLoadOp(info->depthStencil.stencil.load, info->depthStencil.stencil.clear),
-      .stencilStoreOp = info->depthStencil.depth.save ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE
+      .stencilStoreOp = info->depthStencil.depth.save ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .initialLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .finalLayout = VK_IMAGE_LAYOUT_GENERAL
     };
 
     references[i] = (VkAttachmentReference) {
       .attachment = i,
-      .layout = VK_IMAGE_LAYOUT_UNDEFINED
+      .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
     };
+
+    imageViews[i] = info->depthStencil.texture->view;
   }
 
   VkSubpassDescription subpass = {
@@ -733,11 +801,26 @@ bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info) {
     return false;
   }
 
+  VkFramebufferCreateInfo framebufferInfo = {
+    .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+    .renderPass = canvas->handle,
+    .attachmentCount = totalCount,
+    .pAttachments = imageViews,
+    .width = 0, // TODO
+    .height = 0,
+    .layers = 1
+  };
+
+  if (vkCreateFramebuffer(state.device, &framebufferInfo, NULL, &canvas->framebuffer)) {
+    vkDestroyRenderPass(state.device, canvas->handle, NULL);
+  }
+
   return false;
 }
 
 void gpu_canvas_destroy(gpu_canvas* canvas) {
   if (canvas->handle) gpu_condemn(VK_OBJECT_TYPE_RENDER_PASS, canvas->handle), canvas->handle = VK_NULL_HANDLE;
+  if (canvas->framebuffer) gpu_condemn(VK_OBJECT_TYPE_FRAMEBUFFER, canvas->framebuffer), canvas->framebuffer = VK_NULL_HANDLE;
 }
 
 // Helpers
@@ -752,9 +835,45 @@ static uint32_t findMemoryType(uint32_t bits, uint32_t mask) {
   return ~0u;
 }
 
+static VkFormat convertTextureFormat(gpu_texture_format format) {
+  switch (format) {
+    case GPU_TEXTURE_FORMAT_RGBA8: return VK_FORMAT_R8G8B8A8_UNORM;
+    default: return VK_FORMAT_UNDEFINED;
+  }
+}
+
+static bool isDepthFormat(gpu_texture_format format) {
+  switch (format) {
+    default: return false;
+  }
+}
+
 static VkAttachmentLoadOp convertLoadOp(bool load, bool clear) {
   if (clear) return VK_ATTACHMENT_LOAD_OP_CLEAR;
   return load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+}
+
+static void setLayout(gpu_texture* texture, VkImageLayout layout, VkPipelineStageFlags nextStages, VkAccessFlags nextActions) {
+  if (texture->layout == layout) {
+    return;
+  }
+
+  VkImageMemoryBarrier barrier = {
+    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+    .srcAccessMask = 0,
+    .dstAccessMask = nextActions,
+    .oldLayout = texture->layout,
+    .newLayout = layout,
+    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+    .image = texture->handle,
+    .subresourceRange = { texture->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS }
+  };
+
+  // TODO Wait for nothing, but could we opportunistically sync with other pending writes?  Or is that weird
+  VkPipelineStageFlags waitFor = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+  vkCmdPipelineBarrier(state.cmd, waitFor, nextStages, 0, 0, NULL, 0, NULL, 1, &barrier);
+  texture->layout = layout;
 }
 
 static void nickname(uint64_t handle, VkObjectType type, const char* name) {
