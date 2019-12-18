@@ -60,6 +60,8 @@
   X(vkFreeMemory);\
   X(vkMapMemory);\
   X(vkUnmapMemory);\
+  X(vkCreateSampler);\
+  X(vkDestroySampler);\
   X(vkCreateRenderPass);\
   X(vkDestroyRenderPass);\
   X(vkCreateImageView);\
@@ -101,6 +103,10 @@ struct gpu_texture {
   gpu_texture_type type;
   VkFormat format;
   VkImageAspectFlagBits aspect;
+};
+
+struct gpu_sampler {
+  VkSampler handle;
 };
 
 struct gpu_canvas {
@@ -159,6 +165,7 @@ static struct {
 static uint32_t findMemoryType(uint32_t bits, uint32_t mask);
 static VkFormat convertTextureFormat(gpu_texture_format format);
 static bool isDepthFormat(gpu_texture_format format);
+static VkSamplerAddressMode convertWrap(gpu_wrap wrap);
 static VkAttachmentLoadOp convertLoadOp(bool load, bool clear);
 static void setLayout(gpu_texture* texture, VkImageLayout layout, VkPipelineStageFlags nextStages, VkAccessFlags nextActions);
 static void nicknameObject(uint64_t object, VkObjectType type, const char* nickname);
@@ -200,6 +207,7 @@ static void gpu_purge(gpu_frame* frame) {
       case VK_OBJECT_TYPE_IMAGE: vkDestroyImage(state.device, ref->handle, NULL); break;
       case VK_OBJECT_TYPE_DEVICE_MEMORY: vkFreeMemory(state.device, ref->handle, NULL); break;
       case VK_OBJECT_TYPE_IMAGE_VIEW: vkDestroyImageView(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_SAMPLER: vkDestroySampler(state.device, ref->handle, NULL); break;
       case VK_OBJECT_TYPE_RENDER_PASS: vkDestroyRenderPass(state.device, ref->handle, NULL); break;
       case VK_OBJECT_TYPE_FRAMEBUFFER: vkDestroyFramebuffer(state.device, ref->handle, NULL); break;
       default: GPU_THROW("Unreachable"); break;
@@ -734,6 +742,32 @@ void gpu_texture_paste(gpu_texture* texture, uint8_t* data, uint64_t size, uint1
   vkCmdCopyBufferToImage(state.commandBuffer, source, destination, texture->layout, 1, &copy);
 }
 
+size_t gpu_sizeof_sampler() {
+  return sizeof(gpu_sampler);
+}
+
+bool gpu_sampler_init(gpu_sampler* sampler, gpu_sampler_info* info) {
+  VkSamplerCreateInfo createInfo = {
+    .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+    .magFilter = info->mag == GPU_FILTER_NEAREST ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+    .minFilter = info->min == GPU_FILTER_NEAREST ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+    .mipmapMode = info->mip == GPU_FILTER_NEAREST ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR,
+    .addressModeU = convertWrap(info->wrapu),
+    .addressModeV = convertWrap(info->wrapv),
+    .addressModeW = convertWrap(info->wrapw),
+    .anisotropyEnable = info->anisotropy > 0.f,
+    .maxAnisotropy = info->anisotropy
+  };
+
+  GPU_VK(vkCreateSampler(state.device, &createInfo, NULL, &sampler->handle));
+
+  return true;
+}
+
+void gpu_sampler_destroy(gpu_sampler* sampler) {
+  if (sampler->handle) gpu_condemn(VK_OBJECT_TYPE_SAMPLER, sampler->handle), sampler->handle = VK_NULL_HANDLE;
+}
+
 size_t gpu_sizeof_canvas() {
   return sizeof(gpu_canvas);
 }
@@ -847,6 +881,15 @@ static VkFormat convertTextureFormat(gpu_texture_format format) {
 static bool isDepthFormat(gpu_texture_format format) {
   switch (format) {
     default: return false;
+  }
+}
+
+static VkSamplerAddressMode convertWrap(gpu_wrap wrap) {
+  switch (wrap) {
+    case GPU_WRAP_CLAMP: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    case GPU_WRAP_REPEAT: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    case GPU_WRAP_MIRROR: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    default: GPU_THROW("Unreachable");
   }
 }
 

@@ -6,6 +6,7 @@
 
 typedef struct gpu_buffer gpu_buffer;
 typedef struct gpu_texture gpu_texture;
+typedef struct gpu_sampler gpu_sampler;
 typedef struct gpu_canvas gpu_canvas;
 
 typedef enum {
@@ -37,6 +38,17 @@ typedef enum {
   GPU_TEXTURE_TYPE_ARRAY
 } gpu_texture_type;
 
+typedef enum {
+  GPU_FILTER_NEAREST,
+  GPU_FILTER_LINEAR
+} gpu_filter;
+
+typedef enum {
+  GPU_WRAP_CLAMP,
+  GPU_WRAP_REPEAT,
+  GPU_WRAP_MIRROR
+} gpu_wrap;
+
 typedef struct {
   uint64_t size;
   uint32_t usage;
@@ -62,6 +74,16 @@ typedef struct {
   uint32_t layerCount;
   const char* nickname;
 } gpu_texture_view_info;
+
+typedef struct {
+  gpu_filter min;
+  gpu_filter mag;
+  gpu_filter mip;
+  gpu_wrap wrapu;
+  gpu_wrap wrapv;
+  gpu_wrap wrapw;
+  float anisotropy;
+} gpu_sampler_info;
 
 typedef struct {
   struct {
@@ -106,6 +128,10 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info);
 bool gpu_texture_init_view(gpu_texture* view, gpu_texture* source, gpu_texture_view_info* info);
 void gpu_texture_destroy(gpu_texture* texture);
 void gpu_texture_paste(gpu_texture* texture, uint8_t* data, uint64_t size, uint16_t offset[4], uint16_t extent[4], uint16_t mip);
+
+size_t gpu_sizeof_sampler();
+bool gpu_sampler_init(gpu_sampler* sampler, gpu_sampler_info* info);
+void gpu_sampler_destroy(gpu_sampler* sampler);
 
 size_t gpu_sizeof_canvas();
 bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info);
