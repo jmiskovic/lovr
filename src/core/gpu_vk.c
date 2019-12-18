@@ -58,7 +58,9 @@
   X(vkAllocateMemory);\
   X(vkFreeMemory);\
   X(vkMapMemory);\
-  X(vkUnmapMemory)
+  X(vkUnmapMemory);\
+  X(vkCreateRenderPass);\
+  X(vkDestroyRenderPass)
 
 // Used to load/declare Vulkan functions without lots of clutter
 #define GPU_LOAD_ANONYMOUS(fn) fn = (PFN_##fn) vkGetInstanceProcAddr(NULL, #fn)
@@ -89,10 +91,11 @@ struct gpu_texture {
   VkImage handle;
   VkDeviceMemory memory;
   VkImageLayout layout;
+  VkFormat format;
 };
 
 struct gpu_canvas {
-  VkRenderPass renderPass;
+  VkRenderPass handle;
   VkFramebuffer framebuffer;
 };
 
@@ -143,6 +146,7 @@ static struct {
 } state;
 
 static uint32_t findMemoryType(uint32_t bits, uint32_t mask);
+static VkAttachmentLoadOp convertLoadOp(bool load, bool clear);
 static void nickname(uint64_t object, VkObjectType type, const char* name);
 static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT flags, const VkDebugUtilsMessengerCallbackDataEXT* data, void* context);
 static const char* getErrorString(VkResult result);
@@ -180,6 +184,7 @@ static void gpu_purge(gpu_frame* frame) {
     switch (ref->type) {
       case VK_OBJECT_TYPE_BUFFER: vkDestroyBuffer(state.device, ref->handle, NULL); break;
       case VK_OBJECT_TYPE_IMAGE: vkDestroyImage(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_RENDER_PASS: vkDestroyRenderPass(state.device, ref->handle, NULL); break;
       case VK_OBJECT_TYPE_DEVICE_MEMORY: vkFreeMemory(state.device, ref->handle, NULL); break;
       default: GPU_THROW("Unreachable"); break;
     }
@@ -563,9 +568,8 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
     default: return false;
   }
 
-  VkFormat format;
   switch (info->format) {
-    case GPU_TEXTURE_FORMAT_RGBA8: format = VK_FORMAT_R8G8B8A8_UNORM; break;
+    case GPU_TEXTURE_FORMAT_RGBA8: texture->format = VK_FORMAT_R8G8B8A8_UNORM; break;
     default: return false;
   }
 
@@ -584,7 +588,7 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
     .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
     .flags = flags,
     .imageType = type,
-    .format = format,
+    .format = texture->format,
     .extent.width = info->size[0],
     .extent.height = info->size[1],
     .extent.depth = info->size[2],
@@ -674,12 +678,69 @@ size_t gpu_sizeof_canvas() {
 }
 
 bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info) {
+  VkAttachmentDescription attachments[5];
+  VkAttachmentReference references[5];
+  uint32_t colorCount = 0;
+  uint32_t totalCount = 0;
+
+  for (uint32_t i = 0; i < COUNTOF(info->color) && info->color[i].texture; i++, colorCount++, totalCount++) {
+    attachments[i] = (VkAttachmentDescription) {
+      .format = info->color[i].texture->format,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = convertLoadOp(info->color[i].load, info->color[i].clear),
+      .storeOp = info->color[i].save ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE
+    };
+
+    references[i] = (VkAttachmentReference) {
+      .attachment = i,
+      .layout = VK_IMAGE_LAYOUT_UNDEFINED
+    };
+  }
+
+  if (info->depthStencil.texture) {
+    uint32_t i = totalCount++;
+
+    attachments[i] = (VkAttachmentDescription) {
+      .format = info->depthStencil.texture->format,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = convertLoadOp(info->depthStencil.depth.load, info->depthStencil.depth.clear),
+      .storeOp = info->depthStencil.depth.save ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .stencilLoadOp = convertLoadOp(info->depthStencil.stencil.load, info->depthStencil.stencil.clear),
+      .stencilStoreOp = info->depthStencil.depth.save ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE
+    };
+
+    references[i] = (VkAttachmentReference) {
+      .attachment = i,
+      .layout = VK_IMAGE_LAYOUT_UNDEFINED
+    };
+  }
+
+  VkSubpassDescription subpass = {
+    .colorAttachmentCount = colorCount,
+    .pColorAttachments = references,
+    .pDepthStencilAttachment = info->depthStencil.texture ? &references[colorCount] : NULL
+  };
+
+  VkRenderPassCreateInfo renderPassInfo = {
+    .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+    .attachmentCount = totalCount,
+    .pAttachments = attachments,
+    .subpassCount = 1,
+    .pSubpasses = &subpass
+  };
+
+  if (vkCreateRenderPass(state.device, &renderPassInfo, NULL, &canvas->handle)) {
+    return false;
+  }
+
   return false;
 }
 
 void gpu_canvas_destroy(gpu_canvas* canvas) {
-  //
+  if (canvas->handle) gpu_condemn(VK_OBJECT_TYPE_RENDER_PASS, canvas->handle), canvas->handle = VK_NULL_HANDLE;
 }
+
+// Helpers
 
 static uint32_t findMemoryType(uint32_t bits, uint32_t mask) {
   for (uint32_t i = 0; i < state.memoryProperties.memoryTypeCount; i++) {
@@ -689,6 +750,11 @@ static uint32_t findMemoryType(uint32_t bits, uint32_t mask) {
     }
   }
   return ~0u;
+}
+
+static VkAttachmentLoadOp convertLoadOp(bool load, bool clear) {
+  if (clear) return VK_ATTACHMENT_LOAD_OP_CLEAR;
+  return load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 }
 
 static void nickname(uint64_t handle, VkObjectType type, const char* name) {

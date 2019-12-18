@@ -30,7 +30,7 @@ typedef enum {
 } gpu_texture_format;
 
 typedef enum {
-  GPU_TEXTURE_TYPE_2D = 0,
+  GPU_TEXTURE_TYPE_2D,
   GPU_TEXTURE_TYPE_3D,
   GPU_TEXTURE_TYPE_CUBE,
   GPU_TEXTURE_TYPE_ARRAY
@@ -53,7 +53,22 @@ typedef struct {
 } gpu_texture_info;
 
 typedef struct {
-  uint32_t attachmentCount;
+  struct {
+    gpu_texture* texture;
+    bool load, clear, save;
+  } color[4];
+  struct {
+    gpu_texture* texture;
+    struct { bool load, clear, save; } depth;
+    struct { bool load, clear, save; } stencil;
+  } depthStencil;
+  struct {
+    float color[4][4];
+    float depth;
+    uint8_t stencil;
+  } clear;
+  uint32_t msaa;
+  bool stereo;
 } gpu_canvas_info;
 
 typedef void gpu_callback(void* context, const char* message, bool severe);
