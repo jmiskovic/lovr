@@ -126,15 +126,17 @@ typedef struct {
 } gpu_scratchpad;
 
 typedef struct {
+  gpu_scratchpad* list;
+  uint16_t count;
+  uint16_t current;
+  uint32_t cursor;
+} gpu_pool;
+
+typedef struct {
   VkFence fence;
   VkCommandBuffer commandBuffer;
   gpu_freelist freelist;
-  struct gpu_pool {
-    gpu_scratchpad* list;
-    uint16_t count;
-    uint16_t current;
-    uint32_t cursor;
-  } pool;
+  gpu_pool pool;
 } gpu_frame;
 
 static struct {
@@ -149,7 +151,7 @@ static struct {
   VkDevice device;
   VkQueue queue;
   VkCommandPool commandPool;
-  VkCommandBuffer cmd;
+  VkCommandBuffer commandBuffer;
   gpu_frame frames[2];
   uint32_t frame;
 } state;
@@ -159,7 +161,7 @@ static VkFormat convertTextureFormat(gpu_texture_format format);
 static bool isDepthFormat(gpu_texture_format format);
 static VkAttachmentLoadOp convertLoadOp(bool load, bool clear);
 static void setLayout(gpu_texture* texture, VkImageLayout layout, VkPipelineStageFlags nextStages, VkAccessFlags nextActions);
-static void nickname(uint64_t object, VkObjectType type, const char* name);
+static void nicknameObject(uint64_t object, VkObjectType type, const char* nickname);
 static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT flags, const VkDebugUtilsMessengerCallbackDataEXT* data, void* context);
 static const char* getErrorString(VkResult result);
 
@@ -207,7 +209,7 @@ static void gpu_purge(gpu_frame* frame) {
 }
 
 static uint8_t* gpu_map(uint64_t size, gpu_mapping* mapping) {
-  struct gpu_pool* pool = &state.frames[state.frame].pool;
+  gpu_pool* pool = &state.frames[state.frame].pool;
   gpu_scratchpad* scratchpad = &pool->list[pool->current];
 
   if (pool->count == 0 || pool->cursor + size > SCRATCHPAD_SIZE) {
@@ -459,14 +461,14 @@ void gpu_begin_frame() {
   frame->pool.cursor = 0;
   gpu_purge(frame);
 
-  state.cmd = frame->commandBuffer;
+  state.commandBuffer = frame->commandBuffer;
 
   VkCommandBufferBeginInfo beginfo = {
     .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
   };
 
-  GPU_VK(vkBeginCommandBuffer(state.cmd, &beginfo));
+  GPU_VK(vkBeginCommandBuffer(state.commandBuffer, &beginfo));
 }
 
 void gpu_end_frame() {
@@ -510,7 +512,7 @@ bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
     return false;
   }
 
-  nickname(VOIDP_TO_U64(buffer->handle), VK_OBJECT_TYPE_BUFFER, info->name);
+  nicknameObject(VOIDP_TO_U64(buffer->handle), VK_OBJECT_TYPE_BUFFER, info->nickname);
 
   VkMemoryRequirements requirements;
   vkGetBufferMemoryRequirements(state.device, buffer->handle, &requirements);
@@ -566,7 +568,7 @@ void gpu_buffer_unmap(gpu_buffer* buffer) {
     .size = buffer->targetSize
   };
 
-  vkCmdCopyBuffer(state.cmd, source, destination, 1, &copy);
+  vkCmdCopyBuffer(state.commandBuffer, source, destination, 1, &copy);
 }
 
 size_t gpu_sizeof_texture() {
@@ -620,7 +622,7 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
     return false;
   }
 
-  nickname(VOIDP_TO_U64(texture->handle), VK_OBJECT_TYPE_IMAGE, info->name);
+  nicknameObject(VOIDP_TO_U64(texture->handle), VK_OBJECT_TYPE_IMAGE, info->nickname);
 
   VkMemoryRequirements requirements;
   vkGetImageMemoryRequirements(state.device, texture->handle, &requirements);
@@ -729,7 +731,7 @@ void gpu_texture_paste(gpu_texture* texture, uint8_t* data, uint64_t size, uint1
 
   setLayout(texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
 
-  vkCmdCopyBufferToImage(state.cmd, source, destination, texture->layout, 1, &copy);
+  vkCmdCopyBufferToImage(state.commandBuffer, source, destination, texture->layout, 1, &copy);
 }
 
 size_t gpu_sizeof_canvas() {
@@ -872,17 +874,17 @@ static void setLayout(gpu_texture* texture, VkImageLayout layout, VkPipelineStag
 
   // TODO Wait for nothing, but could we opportunistically sync with other pending writes?  Or is that weird
   VkPipelineStageFlags waitFor = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-  vkCmdPipelineBarrier(state.cmd, waitFor, nextStages, 0, 0, NULL, 0, NULL, 1, &barrier);
+  vkCmdPipelineBarrier(state.commandBuffer, waitFor, nextStages, 0, 0, NULL, 0, NULL, 1, &barrier);
   texture->layout = layout;
 }
 
-static void nickname(uint64_t handle, VkObjectType type, const char* name) {
-  if (state.config.debug && name) {
+static void nicknameObject(uint64_t handle, VkObjectType type, const char* nickname) {
+  if (nickname && state.config.debug) {
     VkDebugUtilsObjectNameInfoEXT info = {
       .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
       .objectType = type,
       .objectHandle = handle,
-      .pObjectName = name
+      .pObjectName = nickname
     };
 
     GPU_VK(vkSetDebugUtilsObjectNameEXT(state.device, &info));

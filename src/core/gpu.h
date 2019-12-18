@@ -40,7 +40,7 @@ typedef enum {
 typedef struct {
   uint64_t size;
   uint32_t usage;
-  const char* name;
+  const char* nickname;
 } gpu_buffer_info;
 
 typedef struct {
@@ -50,7 +50,7 @@ typedef struct {
   uint32_t layers;
   uint32_t mipmaps;
   uint32_t usage;
-  const char* name;
+  const char* nickname;
 } gpu_texture_info;
 
 typedef struct {
@@ -60,7 +60,7 @@ typedef struct {
   uint32_t mipmapCount;
   uint32_t baseLayer;
   uint32_t layerCount;
-  const char* name;
+  const char* nickname;
 } gpu_texture_view_info;
 
 typedef struct {
