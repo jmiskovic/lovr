@@ -8,9 +8,9 @@
 #define COUNTOF(x) (sizeof(x) / sizeof(x[0]))
 #define SCRATCHPAD_SIZE (16 * 1024 * 1024)
 #define VOIDP_TO_U64(x) (((union { uint64_t u; void* p; }) { .p = x }).u)
-#define GPU_THROW(s) state.config.callback(state.config.context, s, true)
+#define GPU_THROW(s) if (state.config.callback) { state.config.callback(state.config.context, s, true); }
 #define GPU_CHECK(c, s) if (!(c)) { GPU_THROW(s); }
-#define GPU_VK(r) if (r < 0) { state.config.callback(state.config.context, "Vulkan Error", true); }
+#define GPU_VK(f) do { VkResult r = (f); GPU_CHECK(r >= 0, getErrorString(r)); } while (0)
 
 // Functions that don't require an instance
 #define GPU_FOREACH_ANONYMOUS(X)\
@@ -145,6 +145,7 @@ static struct {
 static uint32_t findMemoryType(uint32_t bits, uint32_t mask);
 static void nickname(uint64_t object, VkObjectType type, const char* name);
 static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT flags, const VkDebugUtilsMessengerCallbackDataEXT* data, void* context);
+static const char* getErrorString(VkResult result);
 
 // Condemns an object, marking it for deletion (objects can't be destroyed while the GPU is still
 // using them).  Condemned objects are purged in gpu_begin_frame after waiting on a fence.  We have
@@ -191,18 +192,13 @@ static uint8_t* gpu_map(uint64_t size, gpu_mapping* mapping) {
   gpu_scratchpad* scratchpad = &pool->list[pool->current];
 
   if (pool->count == 0 || pool->cursor + size > SCRATCHPAD_SIZE) {
-    if (size > SCRATCHPAD_SIZE) {
-      return NULL; // Unsatisfiable
-    }
+    GPU_CHECK(size <= SCRATCHPAD_SIZE, "Tried to map too much memory");
 
     pool->cursor = 0;
     pool->current = pool->count++;
     pool->list = realloc(pool->list, pool->count * sizeof(gpu_scratchpad));
+    GPU_CHECK(pool->list, "Out of memory");
     scratchpad = &pool->list[pool->current];
-
-    if (!pool->list) {
-      return NULL; // OOM
-    }
 
     // Create buffer
     VkBufferCreateInfo bufferInfo = {
@@ -211,9 +207,7 @@ static uint8_t* gpu_map(uint64_t size, gpu_mapping* mapping) {
       .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
     };
 
-    if (vkCreateBuffer(state.device, &bufferInfo, NULL, &scratchpad->buffer)) {
-      return NULL;
-    }
+    GPU_VK(vkCreateBuffer(state.device, &bufferInfo, NULL, &scratchpad->buffer));
 
     // Get memory requirements, once
     if (state.scratchpadMemoryRequirements.size == 0) {
@@ -236,17 +230,19 @@ static uint8_t* gpu_map(uint64_t size, gpu_mapping* mapping) {
 
     if (vkAllocateMemory(state.device, &memoryInfo, NULL, &scratchpad->memory)) {
       vkDestroyBuffer(state.device, scratchpad->buffer, NULL);
-      return NULL; // OOM
+      GPU_THROW("Out of memory");
     }
 
     if (vkBindBufferMemory(state.device, scratchpad->buffer, scratchpad->memory, 0)) {
       vkDestroyBuffer(state.device, scratchpad->buffer, NULL);
       vkFreeMemory(state.device, scratchpad->memory, NULL);
-      return NULL; // PANIC
+      GPU_THROW("Out of memory");
     }
 
     if (vkMapMemory(state.device, scratchpad->memory, 0, VK_WHOLE_SIZE, 0, &scratchpad->data)) {
-      return NULL; // OOM
+      vkDestroyBuffer(state.device, scratchpad->buffer, NULL);
+      vkFreeMemory(state.device, scratchpad->memory, NULL);
+      GPU_THROW("Out of memory");
     }
   }
 
@@ -434,38 +430,27 @@ void gpu_destroy() {
 void gpu_begin_frame() {
   gpu_frame* frame = &state.frames[state.frame];
 
+  // Wait for GPU to process the frame, then reset its scratchpad pool and purge condemned resources
+  GPU_VK(vkWaitForFences(state.device, 1, &frame->fence, VK_FALSE, ~0ull));
+  GPU_VK(vkResetFences(state.device, 1, &frame->fence));
+  frame->pool.current = 0;
+  frame->pool.cursor = 0;
+  gpu_purge(frame);
+
+  state.cmd = frame->commandBuffer;
+
   VkCommandBufferBeginInfo beginfo = {
     .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
   };
 
-  if (vkWaitForFences(state.device, 1, &frame->fence, VK_FALSE, ~0ull)) {
-    // OOM
-  }
-
-  if (vkResetFences(state.device, 1, &frame->fence)) {
-    // OOM
-  }
-
-  // Recycle staging buffers
-  frame->pool.current = 0;
-  frame->pool.cursor = 0;
-
-  // Purge condemned resources
-  gpu_purge(frame);
-
-  state.cmd = frame->commandBuffer;
-  if (vkBeginCommandBuffer(state.cmd, &beginfo)) {
-    // OOM
-  }
+  GPU_VK(vkBeginCommandBuffer(state.cmd, &beginfo));
 }
 
 void gpu_end_frame() {
   gpu_frame* frame = &state.frames[state.frame];
 
-  if (vkEndCommandBuffer(frame->commandBuffer)) {
-    // OOM
-  }
+  GPU_VK(vkEndCommandBuffer(frame->commandBuffer));
 
   VkSubmitInfo submitInfo = {
     .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -473,9 +458,7 @@ void gpu_end_frame() {
     .commandBufferCount = 1
   };
 
-  if (vkQueueSubmit(state.queue, 1, &submitInfo, frame->fence)) {
-    // OOM
-  }
+  GPU_VK(vkQueueSubmit(state.queue, 1, &submitInfo, frame->fence));
 
   state.frame = (state.frame + 1) % COUNTOF(state.frames);
 }
@@ -537,10 +520,8 @@ bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
 }
 
 void gpu_buffer_destroy(gpu_buffer* buffer) {
-  if (buffer->handle) gpu_condemn(VK_OBJECT_TYPE_BUFFER, buffer->handle);
-  if (buffer->memory) gpu_condemn(VK_OBJECT_TYPE_DEVICE_MEMORY, buffer->memory);
-  buffer->handle = VK_NULL_HANDLE;
-  buffer->memory = VK_NULL_HANDLE;
+  if (buffer->handle) gpu_condemn(VK_OBJECT_TYPE_BUFFER, buffer->handle), buffer->handle = VK_NULL_HANDLE;
+  if (buffer->memory) gpu_condemn(VK_OBJECT_TYPE_DEVICE_MEMORY, buffer->memory), buffer->memory = VK_NULL_HANDLE;
 }
 
 uint8_t* gpu_buffer_map(gpu_buffer* buffer, uint64_t offset, uint64_t size) {
@@ -652,10 +633,8 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
 }
 
 void gpu_texture_destroy(gpu_texture* texture) {
-  if (texture->handle) gpu_condemn(VK_OBJECT_TYPE_IMAGE, texture->handle);
-  if (texture->memory) gpu_condemn(VK_OBJECT_TYPE_DEVICE_MEMORY, texture->memory);
-  texture->handle = VK_NULL_HANDLE;
-  texture->memory = VK_NULL_HANDLE;
+  if (texture->handle) gpu_condemn(VK_OBJECT_TYPE_IMAGE, texture->handle), texture->handle = VK_NULL_HANDLE;
+  if (texture->memory) gpu_condemn(VK_OBJECT_TYPE_DEVICE_MEMORY, texture->memory), texture->memory = VK_NULL_HANDLE;
 }
 
 void gpu_texture_paste(gpu_texture* texture, uint8_t* data, uint64_t size, uint16_t offset[4], uint16_t extent[4], uint16_t mip) {
@@ -721,14 +700,27 @@ static void nickname(uint64_t handle, VkObjectType type, const char* name) {
       .pObjectName = name
     };
 
-    if (vkSetDebugUtilsObjectNameEXT(state.device, &info)) {
-      // OOM
-    }
+    GPU_VK(vkSetDebugUtilsObjectNameEXT(state.device, &info));
   }
 }
 
 static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT flags, const VkDebugUtilsMessengerCallbackDataEXT* data, void* context) {
-  bool severe = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-  state.config.callback(state.config.context, data->pMessage, severe);
+  if (state.config.callback) {
+    bool severe = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    state.config.callback(state.config.context, data->pMessage, severe);
+  }
+
   return VK_FALSE;
+}
+
+static const char* getErrorString(VkResult result) {
+  switch (result) {
+    case VK_ERROR_OUT_OF_HOST_MEMORY: return "Out of CPU memory";
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "Out of GPU memory";
+    case VK_ERROR_MEMORY_MAP_FAILED: return "Could not map memory";
+    case VK_ERROR_DEVICE_LOST: return "Lost connection to GPU";
+    case VK_ERROR_TOO_MANY_OBJECTS: return "Too many objects";
+    case VK_ERROR_FORMAT_NOT_SUPPORTED: return "Unsupported format";
+    default: return NULL;
+  }
 }
