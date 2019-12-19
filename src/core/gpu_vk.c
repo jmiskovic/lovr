@@ -117,6 +117,12 @@ struct gpu_canvas {
   VkRenderPass handle;
   VkFramebuffer framebuffer;
   VkRect2D renderArea;
+  struct {
+    gpu_texture* texture;
+    VkImageLayout layout;
+    VkPipelineStageFlags stage;
+    VkAccessFlags access;
+  } sync[5];
   VkClearValue clears[5];
 };
 
@@ -467,13 +473,17 @@ void gpu_end_frame() {
 }
 
 void gpu_begin_render(gpu_canvas* canvas) {
+  for (uint32_t i = 0; i < COUNTOF(canvas->sync) && canvas->sync[i].texture; i++) {
+    setLayout(canvas->sync[i].texture, canvas->sync[i].layout, canvas->sync[i].stage, canvas->sync[i].access);
+  }
+
   VkRenderPassBeginInfo beginfo = {
     .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
     .renderPass = canvas->handle,
     .framebuffer = canvas->framebuffer,
     .renderArea = canvas->renderArea,
-    .pClearValues = canvas->clears,
-    .clearValueCount = 5
+    .clearValueCount = COUNTOF(canvas->clears),
+    .pClearValues = canvas->clears
   };
 
   vkCmdBeginRenderPass(state.commandBuffer, &beginfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -786,6 +796,11 @@ bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info) {
     imageViews[i] = info->color[i].texture->view;
 
     memcpy(canvas->clears[i].color.float32, info->color[i].clear, 4 * sizeof(float));
+    canvas->sync[i].texture = info->color[i].texture;;
+    canvas->sync[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    canvas->sync[i].stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    canvas->sync[i].access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    canvas->sync[i].access |= info->color[i].load ? VK_ACCESS_COLOR_ATTACHMENT_READ_BIT : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
   }
 
   if (info->depth.texture) {
@@ -807,6 +822,11 @@ bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info) {
 
     canvas->clears[i].depthStencil.depth = info->depth.clear;
     canvas->clears[i].depthStencil.stencil = info->depth.stencil.clear;
+    canvas->sync[i].texture = info->depth.texture;
+    canvas->sync[i].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    canvas->sync[i].stage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    canvas->sync[i].access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    canvas->sync[i].access |= (info->depth.load || info->depth.stencil.load) ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT : 0;
   }
 
   VkSubpassDescription subpass = {
