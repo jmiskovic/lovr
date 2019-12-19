@@ -64,6 +64,8 @@
   X(vkDestroySampler);\
   X(vkCreateRenderPass);\
   X(vkDestroyRenderPass);\
+  X(vkCmdBeginRenderPass);\
+  X(vkCmdEndRenderPass);\
   X(vkCreateImageView);\
   X(vkDestroyImageView);\
   X(vkCreateFramebuffer);\
@@ -98,13 +100,13 @@ struct gpu_buffer {
 
 struct gpu_texture {
   VkImage handle;
+  VkImageView view;
   VkImageLayout layout;
   VkDeviceMemory memory;
-  VkImageView view;
+  VkImageAspectFlagBits aspect;
   gpu_texture* source;
   gpu_texture_type type;
   VkFormat format;
-  VkImageAspectFlagBits aspect;
 };
 
 struct gpu_sampler {
@@ -114,6 +116,8 @@ struct gpu_sampler {
 struct gpu_canvas {
   VkRenderPass handle;
   VkFramebuffer framebuffer;
+  VkRect2D renderArea;
+  VkClearValue clears[5];
 };
 
 struct gpu_shader {
@@ -169,60 +173,19 @@ static struct {
   uint32_t frame;
 } state;
 
+static void condemn(void* handle, VkObjectType type);
+static void purge(gpu_frame* frame);
 static uint32_t findMemoryType(uint32_t bits, uint32_t mask);
 static VkFormat convertTextureFormat(gpu_texture_format format);
 static bool isDepthFormat(gpu_texture_format format);
 static VkSamplerAddressMode convertWrap(gpu_wrap wrap);
-static VkAttachmentLoadOp convertLoadOp(bool load, bool clear);
+static VkAttachmentLoadOp convertLoadOp(gpu_load_op op);
+static VkAttachmentStoreOp convertStoreOp(bool temporary);
 static bool loadShader(gpu_shader_source* source, VkShaderStageFlagBits stage, VkShaderModule* handle, VkPipelineShaderStageCreateInfo* pipelineInfo);
 static void setLayout(gpu_texture* texture, VkImageLayout layout, VkPipelineStageFlags nextStages, VkAccessFlags nextActions);
-static void nicknameObject(uint64_t object, VkObjectType type, const char* nickname);
+static void nickname(void* object, VkObjectType type, const char* name);
 static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT flags, const VkDebugUtilsMessengerCallbackDataEXT* data, void* context);
 static const char* getErrorString(VkResult result);
-
-// Condemns an object, marking it for deletion (objects can't be destroyed while the GPU is still
-// using them).  Condemned objects are purged in gpu_begin_frame after waiting on a fence.  We have
-// to manage the freelist memory ourselves because the user could immediately free memory after
-// destroying a resource.
-// TODO currently there is a bug where condemning a resource outside of begin/end frame will
-// immediately purge it on the next call to begin_frame (it should somehow get added to the previous
-// frame's freelist, ugh, maybe advance frame index in begin_frame instead of end_frame)
-// TODO even though this is fairly lightweight it might be worth doing some object tracking to see
-// if you actually need to delay the destruction, and try to destroy it immediately when possible.
-// Because Lua objects are GC'd we probably already have our own delay and could get away with
-// skipping the freelist a lot of the time.  Also you might need to track object access anyway for
-// barriers, so this could wombo combo with the condemnation.  It might be complicated though if you
-// have to track access across multiple frames.
-static void gpu_condemn(VkObjectType type, void* handle) {
-  gpu_freelist* freelist = &state.frames[state.frame].freelist;
-
-  if (freelist->length >= freelist->capacity) {
-    freelist->capacity = freelist->capacity ? (freelist->capacity * 2) : 1;
-    freelist->data = realloc(freelist->data, freelist->capacity * sizeof(*freelist->data));
-    GPU_CHECK(freelist->data, "Out of memory");
-  }
-
-  freelist->data[freelist->length++] = (gpu_ref) { type, handle };
-}
-
-// Purges any previously condemned objects for a frame.  Should only be called if the objects in the
-// frame are known to no longer be accessed by the GPU.
-static void gpu_purge(gpu_frame* frame) {
-  for (size_t i = 0; i < frame->freelist.length; i++) {
-    gpu_ref* ref = &frame->freelist.data[i];
-    switch (ref->type) {
-      case VK_OBJECT_TYPE_BUFFER: vkDestroyBuffer(state.device, ref->handle, NULL); break;
-      case VK_OBJECT_TYPE_IMAGE: vkDestroyImage(state.device, ref->handle, NULL); break;
-      case VK_OBJECT_TYPE_DEVICE_MEMORY: vkFreeMemory(state.device, ref->handle, NULL); break;
-      case VK_OBJECT_TYPE_IMAGE_VIEW: vkDestroyImageView(state.device, ref->handle, NULL); break;
-      case VK_OBJECT_TYPE_SAMPLER: vkDestroySampler(state.device, ref->handle, NULL); break;
-      case VK_OBJECT_TYPE_RENDER_PASS: vkDestroyRenderPass(state.device, ref->handle, NULL); break;
-      case VK_OBJECT_TYPE_FRAMEBUFFER: vkDestroyFramebuffer(state.device, ref->handle, NULL); break;
-      default: GPU_THROW("Unreachable"); break;
-    }
-  }
-  frame->freelist.length = 0;
-}
 
 static uint8_t* gpu_map(uint64_t size, gpu_mapping* mapping) {
   gpu_pool* pool = &state.frames[state.frame].pool;
@@ -444,7 +407,7 @@ void gpu_destroy() {
   for (uint32_t i = 0; i < COUNTOF(state.frames); i++) {
     gpu_frame* frame = &state.frames[i];
 
-    gpu_purge(frame);
+    purge(frame);
     free(frame->freelist.data);
 
     if (frame->fence) vkDestroyFence(state.device, frame->fence, NULL);
@@ -475,7 +438,7 @@ void gpu_begin_frame() {
   GPU_VK(vkResetFences(state.device, 1, &frame->fence));
   frame->pool.current = 0;
   frame->pool.cursor = 0;
-  gpu_purge(frame);
+  purge(frame);
 
   state.commandBuffer = frame->commandBuffer;
 
@@ -503,6 +466,23 @@ void gpu_end_frame() {
   state.frame = (state.frame + 1) % COUNTOF(state.frames);
 }
 
+void gpu_begin_render(gpu_canvas* canvas) {
+  VkRenderPassBeginInfo beginfo = {
+    .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+    .renderPass = canvas->handle,
+    .framebuffer = canvas->framebuffer,
+    .renderArea = canvas->renderArea,
+    .pClearValues = canvas->clears,
+    .clearValueCount = 5
+  };
+
+  vkCmdBeginRenderPass(state.commandBuffer, &beginfo, VK_SUBPASS_CONTENTS_INLINE);
+}
+
+void gpu_end_render() {
+  vkCmdEndRenderPass(state.commandBuffer);
+}
+
 size_t gpu_sizeof_buffer() {
   return sizeof(gpu_buffer);
 }
@@ -528,7 +508,7 @@ bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
     return false;
   }
 
-  nicknameObject(VOIDP_TO_U64(buffer->handle), VK_OBJECT_TYPE_BUFFER, info->nickname);
+  nickname(buffer->handle, VK_OBJECT_TYPE_BUFFER, info->name);
 
   VkMemoryRequirements requirements;
   vkGetBufferMemoryRequirements(state.device, buffer->handle, &requirements);
@@ -560,8 +540,9 @@ bool gpu_buffer_init(gpu_buffer* buffer, gpu_buffer_info* info) {
 }
 
 void gpu_buffer_destroy(gpu_buffer* buffer) {
-  if (buffer->handle) gpu_condemn(VK_OBJECT_TYPE_BUFFER, buffer->handle), buffer->handle = VK_NULL_HANDLE;
-  if (buffer->memory) gpu_condemn(VK_OBJECT_TYPE_DEVICE_MEMORY, buffer->memory), buffer->memory = VK_NULL_HANDLE;
+  if (buffer->handle) condemn(buffer->handle, VK_OBJECT_TYPE_BUFFER);
+  if (buffer->memory) condemn(buffer->memory, VK_OBJECT_TYPE_DEVICE_MEMORY);
+  memset(buffer, 0, sizeof(*buffer));
 }
 
 uint8_t* gpu_buffer_map(gpu_buffer* buffer, uint64_t offset, uint64_t size) {
@@ -638,7 +619,7 @@ bool gpu_texture_init(gpu_texture* texture, gpu_texture_info* info) {
     return false;
   }
 
-  nicknameObject(VOIDP_TO_U64(texture->handle), VK_OBJECT_TYPE_IMAGE, info->nickname);
+  nickname(texture->handle, VK_OBJECT_TYPE_IMAGE, info->name);
 
   VkMemoryRequirements requirements;
   vkGetImageMemoryRequirements(state.device, texture->handle, &requirements);
@@ -717,9 +698,10 @@ bool gpu_texture_init_view(gpu_texture* texture, gpu_texture* source, gpu_textur
 }
 
 void gpu_texture_destroy(gpu_texture* texture) {
-  if (texture->handle) gpu_condemn(VK_OBJECT_TYPE_IMAGE, texture->handle), texture->handle = VK_NULL_HANDLE;
-  if (texture->memory) gpu_condemn(VK_OBJECT_TYPE_DEVICE_MEMORY, texture->memory), texture->memory = VK_NULL_HANDLE;
-  if (texture->view) gpu_condemn(VK_OBJECT_TYPE_IMAGE_VIEW, texture->view), texture->view = VK_NULL_HANDLE;
+  if (texture->handle) condemn(texture->handle, VK_OBJECT_TYPE_IMAGE);
+  if (texture->memory) condemn(texture->memory, VK_OBJECT_TYPE_DEVICE_MEMORY);
+  if (texture->view) condemn(texture->view, VK_OBJECT_TYPE_IMAGE_VIEW);
+  memset(texture, 0, sizeof(*texture));
 }
 
 void gpu_texture_paste(gpu_texture* texture, uint8_t* data, uint64_t size, uint16_t offset[4], uint16_t extent[4], uint16_t mip) {
@@ -769,11 +751,14 @@ bool gpu_sampler_init(gpu_sampler* sampler, gpu_sampler_info* info) {
 
   GPU_VK(vkCreateSampler(state.device, &createInfo, NULL, &sampler->handle));
 
+  nickname(sampler, VK_OBJECT_TYPE_SAMPLER, info->name);
+
   return true;
 }
 
 void gpu_sampler_destroy(gpu_sampler* sampler) {
-  if (sampler->handle) gpu_condemn(VK_OBJECT_TYPE_SAMPLER, sampler->handle), sampler->handle = VK_NULL_HANDLE;
+  if (sampler->handle) condemn(sampler->handle, VK_OBJECT_TYPE_SAMPLER);
+  memset(sampler, 0, sizeof(*sampler));
 }
 
 size_t gpu_sizeof_canvas() {
@@ -791,46 +776,43 @@ bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info) {
     attachments[i] = (VkAttachmentDescription) {
       .format = info->color[i].texture->format,
       .samples = VK_SAMPLE_COUNT_1_BIT,
-      .loadOp = convertLoadOp(info->color[i].load, info->color[i].clear),
-      .storeOp = info->color[i].save ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
-      .initialLayout = VK_IMAGE_LAYOUT_GENERAL,
-      .finalLayout = VK_IMAGE_LAYOUT_GENERAL
+      .loadOp = convertLoadOp(info->color[i].load),
+      .storeOp = convertStoreOp(info->color[i].temporary),
+      .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+      .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
     };
 
-    references[i] = (VkAttachmentReference) {
-      .attachment = i,
-      .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-    };
-
+    references[i] = (VkAttachmentReference) { i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
     imageViews[i] = info->color[i].texture->view;
+
+    memcpy(canvas->clears[i].color.float32, info->color[i].clear, 4 * sizeof(float));
   }
 
-  if (info->depthStencil.texture) {
+  if (info->depth.texture) {
     uint32_t i = totalCount++;
 
     attachments[i] = (VkAttachmentDescription) {
-      .format = info->depthStencil.texture->format,
+      .format = info->depth.texture->format,
       .samples = VK_SAMPLE_COUNT_1_BIT,
-      .loadOp = convertLoadOp(info->depthStencil.depth.load, info->depthStencil.depth.clear),
-      .storeOp = info->depthStencil.depth.save ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
-      .stencilLoadOp = convertLoadOp(info->depthStencil.stencil.load, info->depthStencil.stencil.clear),
-      .stencilStoreOp = info->depthStencil.depth.save ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .loadOp = convertLoadOp(info->depth.load),
+      .storeOp = convertStoreOp(info->depth.temporary),
+      .stencilLoadOp = convertLoadOp(info->depth.stencil.load),
+      .stencilStoreOp = convertStoreOp(info->depth.stencil.temporary),
       .initialLayout = VK_IMAGE_LAYOUT_GENERAL,
       .finalLayout = VK_IMAGE_LAYOUT_GENERAL
     };
 
-    references[i] = (VkAttachmentReference) {
-      .attachment = i,
-      .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    };
+    references[i] = (VkAttachmentReference) { i, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+    imageViews[i] = info->depth.texture->view;
 
-    imageViews[i] = info->depthStencil.texture->view;
+    canvas->clears[i].depthStencil.depth = info->depth.clear;
+    canvas->clears[i].depthStencil.stencil = info->depth.stencil.clear;
   }
 
   VkSubpassDescription subpass = {
     .colorAttachmentCount = colorCount,
     .pColorAttachments = references,
-    .pDepthStencilAttachment = info->depthStencil.texture ? &references[colorCount] : NULL
+    .pDepthStencilAttachment = info->depth.texture ? &references[colorCount] : NULL
   };
 
   VkRenderPassCreateInfo renderPassInfo = {
@@ -845,13 +827,17 @@ bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info) {
     return false;
   }
 
+  // TODO yeah it kind of sucks to have size redundantly specified in info, but I think canvases can
+  // have zero attachments and it is a pain to store the size in gpu_texture
+  canvas->renderArea = (VkRect2D) { { 0, 0 }, { info->size[0], info->size[1] } };
+
   VkFramebufferCreateInfo framebufferInfo = {
     .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
     .renderPass = canvas->handle,
     .attachmentCount = totalCount,
     .pAttachments = imageViews,
-    .width = 0, // TODO
-    .height = 0,
+    .width = canvas->renderArea.extent.width,
+    .height = canvas->renderArea.extent.height,
     .layers = 1
   };
 
@@ -859,12 +845,15 @@ bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info) {
     vkDestroyRenderPass(state.device, canvas->handle, NULL);
   }
 
+  nickname(canvas, VK_OBJECT_TYPE_RENDER_PASS, info->name);
+
   return false;
 }
 
 void gpu_canvas_destroy(gpu_canvas* canvas) {
-  if (canvas->handle) gpu_condemn(VK_OBJECT_TYPE_RENDER_PASS, canvas->handle), canvas->handle = VK_NULL_HANDLE;
-  if (canvas->framebuffer) gpu_condemn(VK_OBJECT_TYPE_FRAMEBUFFER, canvas->framebuffer), canvas->framebuffer = VK_NULL_HANDLE;
+  if (canvas->handle) condemn(canvas->handle, VK_OBJECT_TYPE_RENDER_PASS);
+  if (canvas->framebuffer) condemn(canvas->framebuffer, VK_OBJECT_TYPE_FRAMEBUFFER);
+  memset(canvas, 0, sizeof(*canvas));
 }
 
 size_t gpu_sizeof_shader() {
@@ -885,11 +874,56 @@ bool gpu_shader_init(gpu_shader* shader, gpu_shader_info* info) {
 }
 
 void gpu_shader_destroy(gpu_shader* shader) {
-  if (shader->handles[0]) gpu_condemn(VK_OBJECT_TYPE_SHADER_MODULE, shader->handles[0]), shader->handles[0] = VK_NULL_HANDLE;
-  if (shader->handles[1]) gpu_condemn(VK_OBJECT_TYPE_SHADER_MODULE, shader->handles[1]), shader->handles[1] = VK_NULL_HANDLE;
+  if (shader->handles[0]) condemn(shader->handles[0], VK_OBJECT_TYPE_SHADER_MODULE);
+  if (shader->handles[1]) condemn(shader->handles[1], VK_OBJECT_TYPE_SHADER_MODULE);
+  memset(shader, 0, sizeof(*shader));
 }
 
 // Helpers
+
+// Condemns an object, marking it for deletion (objects can't be destroyed while the GPU is still
+// using them).  Condemned objects are purged in gpu_begin_frame after waiting on a fence.  We have
+// to manage the freelist memory ourselves because the user could immediately free memory after
+// destroying a resource.
+// TODO currently there is a bug where condemning a resource outside of begin/end frame will
+// immediately purge it on the next call to begin_frame (it should somehow get added to the previous
+// frame's freelist, ugh, maybe advance frame index in begin_frame instead of end_frame)
+// TODO even though this is fairly lightweight it might be worth doing some object tracking to see
+// if you actually need to delay the destruction, and try to destroy it immediately when possible.
+// Because Lua objects are GC'd we probably already have our own delay and could get away with
+// skipping the freelist a lot of the time.  Also you might need to track object access anyway for
+// barriers, so this could wombo combo with the condemnation.  It might be complicated though if you
+// have to track access across multiple frames.
+static void condemn(void* handle, VkObjectType type) {
+  gpu_freelist* freelist = &state.frames[state.frame].freelist;
+
+  if (freelist->length >= freelist->capacity) {
+    freelist->capacity = freelist->capacity ? (freelist->capacity * 2) : 1;
+    freelist->data = realloc(freelist->data, freelist->capacity * sizeof(*freelist->data));
+    GPU_CHECK(freelist->data, "Out of memory");
+  }
+
+  freelist->data[freelist->length++] = (gpu_ref) { type, handle };
+}
+
+// Purges any previously condemned objects for a frame.  Should only be called if the objects in the
+// frame are known to no longer be accessed by the GPU.
+static void purge(gpu_frame* frame) {
+  for (size_t i = 0; i < frame->freelist.length; i++) {
+    gpu_ref* ref = &frame->freelist.data[i];
+    switch (ref->type) {
+      case VK_OBJECT_TYPE_BUFFER: vkDestroyBuffer(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_IMAGE: vkDestroyImage(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_DEVICE_MEMORY: vkFreeMemory(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_IMAGE_VIEW: vkDestroyImageView(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_SAMPLER: vkDestroySampler(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_RENDER_PASS: vkDestroyRenderPass(state.device, ref->handle, NULL); break;
+      case VK_OBJECT_TYPE_FRAMEBUFFER: vkDestroyFramebuffer(state.device, ref->handle, NULL); break;
+      default: GPU_THROW("Unreachable"); break;
+    }
+  }
+  frame->freelist.length = 0;
+}
 
 static uint32_t findMemoryType(uint32_t bits, uint32_t mask) {
   for (uint32_t i = 0; i < state.memoryProperties.memoryTypeCount; i++) {
@@ -923,9 +957,17 @@ static VkSamplerAddressMode convertWrap(gpu_wrap wrap) {
   }
 }
 
-static VkAttachmentLoadOp convertLoadOp(bool load, bool clear) {
-  if (clear) return VK_ATTACHMENT_LOAD_OP_CLEAR;
-  return load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+static VkAttachmentLoadOp convertLoadOp(gpu_load_op op) {
+  switch (op) {
+    case GPU_LOAD_OP_LOAD: return VK_ATTACHMENT_LOAD_OP_LOAD;
+    case GPU_LOAD_OP_CLEAR: return VK_ATTACHMENT_LOAD_OP_CLEAR;
+    case GPU_LOAD_OP_DISCARD: return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    default: GPU_THROW("Unreachable");
+  }
+}
+
+static VkAttachmentStoreOp convertStoreOp(bool temporary) {
+  return temporary ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
 }
 
 static bool loadShader(gpu_shader_source* source, VkShaderStageFlagBits stage, VkShaderModule* handle, VkPipelineShaderStageCreateInfo* pipelineInfo) {
@@ -943,7 +985,7 @@ static bool loadShader(gpu_shader_source* source, VkShaderStageFlagBits stage, V
     .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
     .stage = stage,
     .module = *handle,
-    .pName = source->entrypoint, // TODO string ownership hooray
+    .pName = "main", // TODO what even is this
     .pSpecializationInfo = NULL // TODO shader flags
   };
 
@@ -973,13 +1015,13 @@ static void setLayout(gpu_texture* texture, VkImageLayout layout, VkPipelineStag
   texture->layout = layout;
 }
 
-static void nicknameObject(uint64_t handle, VkObjectType type, const char* nickname) {
-  if (nickname && state.config.debug) {
+static void nickname(void* handle, VkObjectType type, const char* name) {
+  if (name && state.config.debug) {
     VkDebugUtilsObjectNameInfoEXT info = {
       .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
       .objectType = type,
-      .objectHandle = handle,
-      .pObjectName = nickname
+      .objectHandle = VOIDP_TO_U64(handle),
+      .pObjectName = name
     };
 
     GPU_VK(vkSetDebugUtilsObjectNameEXT(state.device, &info));
