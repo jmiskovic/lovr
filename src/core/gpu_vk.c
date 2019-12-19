@@ -67,7 +67,9 @@
   X(vkCreateImageView);\
   X(vkDestroyImageView);\
   X(vkCreateFramebuffer);\
-  X(vkDestroyFramebuffer)
+  X(vkDestroyFramebuffer);\
+  X(vkCreateShaderModule);\
+  X(vkDestroyShaderModule)
 
 // Used to load/declare Vulkan functions without lots of clutter
 #define GPU_LOAD_ANONYMOUS(fn) fn = (PFN_##fn) vkGetInstanceProcAddr(NULL, #fn)
@@ -112,6 +114,11 @@ struct gpu_sampler {
 struct gpu_canvas {
   VkRenderPass handle;
   VkFramebuffer framebuffer;
+};
+
+struct gpu_shader {
+  VkShaderModule handles[2];
+  VkPipelineShaderStageCreateInfo pipelineInfo[2];
 };
 
 typedef struct {
@@ -167,6 +174,7 @@ static VkFormat convertTextureFormat(gpu_texture_format format);
 static bool isDepthFormat(gpu_texture_format format);
 static VkSamplerAddressMode convertWrap(gpu_wrap wrap);
 static VkAttachmentLoadOp convertLoadOp(bool load, bool clear);
+static bool loadShader(gpu_shader_source* source, VkShaderStageFlagBits stage, VkShaderModule* handle, VkPipelineShaderStageCreateInfo* pipelineInfo);
 static void setLayout(gpu_texture* texture, VkImageLayout layout, VkPipelineStageFlags nextStages, VkAccessFlags nextActions);
 static void nicknameObject(uint64_t object, VkObjectType type, const char* nickname);
 static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT flags, const VkDebugUtilsMessengerCallbackDataEXT* data, void* context);
@@ -859,6 +867,28 @@ void gpu_canvas_destroy(gpu_canvas* canvas) {
   if (canvas->framebuffer) gpu_condemn(VK_OBJECT_TYPE_FRAMEBUFFER, canvas->framebuffer), canvas->framebuffer = VK_NULL_HANDLE;
 }
 
+size_t gpu_sizeof_shader() {
+  return sizeof(gpu_shader);
+}
+
+bool gpu_shader_init(gpu_shader* shader, gpu_shader_info* info) {
+  memset(shader, 0, sizeof(*shader));
+
+  if (info->compute.code) {
+    loadShader(&info->compute, VK_SHADER_STAGE_COMPUTE_BIT, &shader->handles[0], &shader->pipelineInfo[0]);
+  } else {
+    loadShader(&info->vertex, VK_SHADER_STAGE_VERTEX_BIT, &shader->handles[0], &shader->pipelineInfo[0]);
+    loadShader(&info->fragment, VK_SHADER_STAGE_FRAGMENT_BIT, &shader->handles[1], &shader->pipelineInfo[1]);
+  }
+
+  return true;
+}
+
+void gpu_shader_destroy(gpu_shader* shader) {
+  if (shader->handles[0]) gpu_condemn(VK_OBJECT_TYPE_SHADER_MODULE, shader->handles[0]), shader->handles[0] = VK_NULL_HANDLE;
+  if (shader->handles[1]) gpu_condemn(VK_OBJECT_TYPE_SHADER_MODULE, shader->handles[1]), shader->handles[1] = VK_NULL_HANDLE;
+}
+
 // Helpers
 
 static uint32_t findMemoryType(uint32_t bits, uint32_t mask) {
@@ -896,6 +926,28 @@ static VkSamplerAddressMode convertWrap(gpu_wrap wrap) {
 static VkAttachmentLoadOp convertLoadOp(bool load, bool clear) {
   if (clear) return VK_ATTACHMENT_LOAD_OP_CLEAR;
   return load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+}
+
+static bool loadShader(gpu_shader_source* source, VkShaderStageFlagBits stage, VkShaderModule* handle, VkPipelineShaderStageCreateInfo* pipelineInfo) {
+  VkShaderModuleCreateInfo info = {
+    .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+    .codeSize = source->size,
+    .pCode = source->code
+  };
+
+  if (vkCreateShaderModule(state.device, &info, NULL, handle)) {
+    return false;
+  }
+
+  *pipelineInfo = (VkPipelineShaderStageCreateInfo) {
+    .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+    .stage = stage,
+    .module = *handle,
+    .pName = source->entrypoint, // TODO string ownership hooray
+    .pSpecializationInfo = NULL // TODO shader flags
+  };
+
+  return true;
 }
 
 static void setLayout(gpu_texture* texture, VkImageLayout layout, VkPipelineStageFlags nextStages, VkAccessFlags nextActions) {

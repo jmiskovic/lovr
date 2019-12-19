@@ -8,6 +8,7 @@ typedef struct gpu_buffer gpu_buffer;
 typedef struct gpu_texture gpu_texture;
 typedef struct gpu_sampler gpu_sampler;
 typedef struct gpu_canvas gpu_canvas;
+typedef struct gpu_shader gpu_shader;
 
 typedef enum {
   GPU_BUFFER_USAGE_VERTEX  = (1 << 0),
@@ -48,6 +49,12 @@ typedef enum {
   GPU_WRAP_REPEAT,
   GPU_WRAP_MIRROR
 } gpu_wrap;
+
+typedef struct {
+  const void* code;
+  size_t size;
+  const char* entrypoint;
+} gpu_shader_source;
 
 typedef struct {
   uint64_t size;
@@ -104,6 +111,13 @@ typedef struct {
   bool stereo;
 } gpu_canvas_info;
 
+typedef struct {
+  gpu_shader_source vertex;
+  gpu_shader_source fragment;
+  gpu_shader_source compute;
+  const char* nickname;
+} gpu_shader_info;
+
 typedef void gpu_callback(void* context, const char* message, bool severe);
 
 typedef struct {
@@ -136,3 +150,7 @@ void gpu_sampler_destroy(gpu_sampler* sampler);
 size_t gpu_sizeof_canvas();
 bool gpu_canvas_init(gpu_canvas* canvas, gpu_canvas_info* info);
 void gpu_canvas_destroy(gpu_canvas* canvas);
+
+size_t gpu_sizeof_shader();
+bool gpu_shader_init(gpu_shader* shader, gpu_shader_info* info);
+void gpu_shader_destroy(gpu_shader* shader);
