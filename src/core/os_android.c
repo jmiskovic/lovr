@@ -1,5 +1,5 @@
 #include "os.h"
-#include <stdio.h>
+#include <time.h>
 #include <unistd.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -49,6 +49,31 @@ void lovrPlatformDestroy() {
 
 const char* lovrPlatformGetName() {
   return "Android";
+}
+
+static uint64_t epoch;
+#define NS_PER_SEC 1000000000ULL
+
+static uint64_t getTime() {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t) t.tv_sec * NS_PER_SEC + (uint64_t) t.tv_nsec;
+}
+
+double lovrPlatformGetTime() {
+  return (getTime() - epoch) / (double) NS_PER_SEC;
+}
+
+void lovrPlatformSetTime(double t) {
+  epoch = getTime() - (uint64_t) (t * NS_PER_SEC + .5);
+}
+
+void lovrPlatformSleep(double seconds) {
+  seconds += .5e-9;
+  struct timespec t;
+  t.tv_sec = seconds;
+  t.tv_nsec = (seconds - t.tv_sec) * NS_PER_SEC;
+  while (nanosleep(&t, &t));
 }
 
 void lovrPlatformPollEvents() {
@@ -144,6 +169,10 @@ bool lovrPlatformCreateWindow(WindowFlags* flags) {
   return true;
 }
 
+bool lovrPlatformHasWindow() {
+  return false;
+}
+
 void lovrPlatformGetWindowSize(int* width, int* height) {
   if (width) *width = 0;
   if (height) *height = 0;
@@ -191,8 +220,4 @@ bool lovrPlatformIsMouseDown(MouseButton button) {
 
 bool lovrPlatformIsKeyDown(KeyCode key) {
   return false;
-}
-
-void lovrPlatformSleep(double seconds) {
-  usleep((unsigned int) (seconds * 1000000));
 }

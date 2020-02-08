@@ -1,5 +1,6 @@
 #include "headset/headset.h"
 #include "oculus_mobile_bridge.h"
+#include "event/event.h"
 #include "graphics/graphics.h"
 #include "graphics/canvas.h"
 #include "core/os.h"
@@ -301,25 +302,11 @@ HeadsetInterface lovrHeadsetOculusMobileDriver = {
 
 // Oculus-specific platform functions
 
-static double timeOffset;
-
-void lovrPlatformSetTime(double time) {
-  timeOffset = bridgeLovrMobileData.updateData.displayTime - time;
-}
-
-double lovrPlatformGetTime(void) {
-  return bridgeLovrMobileData.updateData.displayTime - timeOffset;
-}
-
 void lovrPlatformGetFramebufferSize(int* width, int* height) {
   if (width)
     *width = bridgeLovrMobileData.displayDimensions.width;
   if (height)
     *height = bridgeLovrMobileData.displayDimensions.height;
-}
-
-bool lovrPlatformHasWindow() {
-  return false;
 }
 
 // "Bridge" (see oculus_mobile_bridge.h)
@@ -348,18 +335,6 @@ static char *apkPath;
 
 // Expose to filesystem.h
 char *lovrOculusMobileWritablePath;
-
-// Used for resume (pausing the app and returning to the menu) logic. This is needed for two reasons
-// 1. The GLFW time should rewind after a pause so that the app cannot perceive time passed
-// 2. There is a bug in the Mobile SDK https://developer.oculus.com/bugs/bug/189155031962759/
-//    On the first frame after a resume, the time will be total nonsense
-static double lastPauseAt, lastPauseAtRaw; // platform time and oculus time at last pause
-enum {
-  PAUSESTATE_NONE,   // Normal state
-  PAUSESTATE_PAUSED, // A pause has been issued -- waiting for resume
-  PAUSESTATE_BUG,    // We have resumed, but the next frame will be the bad frame
-  PAUSESTATE_RESUME  // We have resumed, and the next frame will need to adjust the clock
-} pauseState;
 
 // A version of print that uses LOG, since stdout does not work on Android
 int luax_print(lua_State* L) {
@@ -401,7 +376,7 @@ static void bridgeLovrInitState() {
   lua_pushcfunction(L, luax_print);
   lua_setglobal(L, "print");
 
-  lovrPlatformSetTime(0);
+  lovrPlatformSetTime(0.);
 
   // Set "arg" global (see main.c)
   {
@@ -482,14 +457,6 @@ void bridgeLovrUpdate(BridgeLovrUpdateData *updateData) {
   // Unpack update data
   bridgeLovrMobileData.updateData = *updateData;
 
-  if (pauseState == PAUSESTATE_BUG) { // Bad frame-- replace bad time with last known good oculus time
-    bridgeLovrMobileData.updateData.displayTime = lastPauseAtRaw;
-    pauseState = PAUSESTATE_RESUME;
-  } else if (pauseState == PAUSESTATE_RESUME) { // Resume frame-- adjust platform time to be equal to last good platform time
-    lovrPlatformSetTime(lastPauseAt);
-    pauseState = PAUSESTATE_NONE;
-  }
-
   // Go
   if (coroutineStartFunctionRef != LUA_NOREF) {
     lua_rawgeti(T, LUA_REGISTRYINDEX, coroutineStartFunctionRef);
@@ -560,23 +527,15 @@ void bridgeLovrDraw(BridgeLovrDrawData *drawData) {
 }
 
 // Android activity has been stopped or resumed
-// In order to prevent weird dt jumps, we need to freeze and reset the clock
-static bool armedUnpause;
 void bridgeLovrPaused(bool paused) {
-  if (paused) { // Save last platform and oculus times and wait for resume
-    lastPauseAt = lovrPlatformGetTime();
-    lastPauseAtRaw = bridgeLovrMobileData.updateData.displayTime;
-    pauseState = PAUSESTATE_PAUSED;
-  } else {
-    if (pauseState != PAUSESTATE_NONE) { // Got a resume-- set flag to start the state machine in bridgeLovrUpdate
-      pauseState = PAUSESTATE_BUG;
-    }
+  lovrEventPush((Event) { .type = EVENT_FOCUS, .data.boolean = { !paused } });
+  if (!paused) {
+    lovrTimerStep();
   }
 }
 
 // Android activity has been "destroyed" (but process will probably not quit)
 void bridgeLovrClose() {
-  pauseState = PAUSESTATE_NONE;
   lua_close(L);
   free(lovrOculusMobileWritablePath);
   for (uint32_t i = 0; i < bridgeLovrMobileData.textureCount; i++) {
