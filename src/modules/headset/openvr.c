@@ -480,7 +480,7 @@ static bool openvr_getAxis(Device device, DeviceAxis axis, vec3 value) {
   return false;
 }
 
-static bool openvr_getSkeleton(Device device, float* poses, uint32_t* poseCount) {
+static bool openvr_getSkeleton(Device device, float* poses, uint32_t* poseCount, float* scale) {
   if (device != DEVICE_HAND_LEFT && device != DEVICE_HAND_RIGHT) {
     return false;
   }
@@ -517,6 +517,7 @@ static bool openvr_getSkeleton(Device device, float* poses, uint32_t* poseCount)
   }
 
   *poseCount = boneCount;
+  *scale = 1.f;
   return true;
 }
 

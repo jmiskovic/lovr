@@ -178,7 +178,7 @@ static bool leap_getAxis(Device device, DeviceAxis axis, float* value) {
   return false;
 }
 
-static bool leap_getSkeleton(Device device, float* poses, uint32_t* poseCount) {
+static bool leap_getSkeleton(Device device, float* poses, uint32_t* poseCount, float* scale) {
   return false;
 }
 
