@@ -25,6 +25,7 @@ static struct {
   uint32_t textureHandles[4];
   uint32_t textureCount;
   Canvas* canvases[4];
+  ModelData* handModels[2];
 } bridgeLovrMobileData;
 
 // Headset
@@ -208,47 +209,50 @@ static bool buttonTouch(BridgeLovrTouch field, DeviceButton button, bool *result
 
 static bool vrapi_isDown(Device device, DeviceButton button, bool* down, bool* changed) {
   int idx = getHandIdx(device);
-  if (idx < 0)
+  if (idx < 0 || (bridgeLovrMobileData.updateData.controllers[idx].hand & BRIDGE_LOVR_HAND_TRACKING)) {
     return false;
+  }
 
-  buttonDown(bridgeLovrMobileData.updateData.controllers[idx].buttonChanged, button, changed);
-  return buttonDown(bridgeLovrMobileData.updateData.controllers[idx].buttonDown, button, down);
+  buttonDown(bridgeLovrMobileData.updateData.controllers[idx].handset.buttonChanged, button, changed);
+  return buttonDown(bridgeLovrMobileData.updateData.controllers[idx].handset.buttonDown, button, down);
 }
 
 static bool vrapi_isTouched(Device device, DeviceButton button, bool* touched) {
   int idx = getHandIdx(device);
-  if (idx < 0)
+  if (idx < 0 || (bridgeLovrMobileData.updateData.controllers[idx].hand & BRIDGE_LOVR_HAND_TRACKING)) {
     return false;
+  }
 
-  return buttonTouch(bridgeLovrMobileData.updateData.controllers[idx].buttonTouch, button, touched);
+  return buttonTouch(bridgeLovrMobileData.updateData.controllers[idx].handset.buttonTouch, button, touched);
 }
 
 static bool vrapi_getAxis(Device device, DeviceAxis axis, float* value) {
   int idx = getHandIdx(device);
-  if (idx < 0)
+  if (idx < 0 || (bridgeLovrMobileData.updateData.controllers[idx].hand & BRIDGE_LOVR_HAND_TRACKING)) {
     return false;
+  }
 
   BridgeLovrController *data = &bridgeLovrMobileData.updateData.controllers[idx];
 
   if (bridgeLovrMobileData.deviceType == BRIDGE_LOVR_DEVICE_QUEST) {
     switch (axis) {
       case AXIS_THUMBSTICK:
-        value[0] = data->trackpad.x;
-        value[1] = data->trackpad.y;
+        value[0] = data->handset.trackpad.x;
+        value[1] = data->handset.trackpad.y;
         break;
-      case AXIS_TRIGGER: value[0] = data->trigger; break;
-      case AXIS_GRIP: value[0] = data->grip; break;
+      case AXIS_TRIGGER: value[0] = data->handset.trigger; break;
+      case AXIS_GRIP: value[0] = data->handset.grip; break;
       default: return false;
     }
   } else {
     switch (axis) {
       case AXIS_TOUCHPAD:
-        value[0] = (data->trackpad.x - 160) / 160.f;
-        value[1] = (data->trackpad.y - 160) / 160.f;
+        value[0] = (data->handset.trackpad.x - 160) / 160.f;
+        value[1] = (data->handset.trackpad.y - 160) / 160.f;
         break;
       case AXIS_TRIGGER: {
         bool down;
-        if (!buttonDown(data->buttonDown, BUTTON_TRIGGER, &down))
+        if (!buttonDown(data->handset.buttonDown, BUTTON_TRIGGER, &down))
           return false;
         value[0] = down ? 1.f : 0.f;
         break;
@@ -256,6 +260,29 @@ static bool vrapi_getAxis(Device device, DeviceAxis axis, float* value) {
       default: return false;
     }
   }
+  return true;
+}
+
+static bool vrapi_getSkeleton(Device device, float* poses, uint32_t* poseCount, float* scale) {
+  int idx = getHandIdx(device);
+  if (idx < 0 || !(bridgeLovrMobileData.updateData.controllers[idx].hand & BRIDGE_LOVR_HAND_TRACKING))
+    return false;
+
+  BridgeLovrController *data = &bridgeLovrMobileData.updateData.controllers[idx];
+  if (*poseCount < data->tracking.boneCount) {
+    return false;
+  }
+
+  ModelData* modelData = bridgeLovrMobileData.handModels[device - DEVICE_HAND_LEFT];
+  for (uint32_t i = 0; i < data->tracking.boneCount; i++) {
+    float* position = modelData->nodes[i].transform.properties.translation;
+    memcpy(poses + 0, position, 4 * sizeof(float));
+    memcpy(poses + 4, data->tracking.boneRotations[i], 4 * sizeof(float));
+    poses += 8;
+  }
+
+  *poseCount = data->tracking.boneCount;
+  *scale = data->tracking.handScale;
   return true;
 }
 
@@ -271,7 +298,11 @@ static bool vrapi_vibrate(Device device, float strength, float duration, float f
 }
 
 static ModelData* vrapi_newModelData(Device device) {
-  return NULL;
+  if (device == DEVICE_HAND_LEFT || device == DEVICE_HAND_RIGHT) {
+    return bridgeLovrMobileData.handModels[device - DEVICE_HAND_LEFT];
+  } else {
+    return NULL;
+  }
 }
 
 // TODO: need to set up swap chain textures for the eyes and finish view transforms
@@ -302,6 +333,7 @@ HeadsetInterface lovrHeadsetOculusMobileDriver = {
   .isDown = vrapi_isDown,
   .isTouched = vrapi_isTouched,
   .getAxis = vrapi_getAxis,
+  .getSkeleton = vrapi_getSkeleton,
   .vibrate = vrapi_vibrate,
   .newModelData = vrapi_newModelData,
   .renderTo = vrapi_renderTo
@@ -475,6 +507,8 @@ void bridgeLovrInit(BridgeLovrInitData *initData) {
   bridgeLovrMobileData.vibrateFunction = initData->vibrateFunction;
   memcpy(bridgeLovrMobileData.textureHandles, initData->textureHandles, initData->textureCount * sizeof(uint32_t));
   bridgeLovrMobileData.textureCount = initData->textureCount;
+  bridgeLovrMobileData.handModels[0] = initData->handModels[0];
+  bridgeLovrMobileData.handModels[1] = initData->handModels[1];
 
   free(apkPath);
   size_t length = strlen(initData->apkPath);
@@ -590,6 +624,9 @@ void bridgeLovrClose() {
   free(lovrOculusMobileWritablePath);
   for (uint32_t i = 0; i < bridgeLovrMobileData.textureCount; i++) {
     lovrRelease(Canvas, bridgeLovrMobileData.canvases[i]);
+  }
+  for (uint32_t i = 0; i < sizeof(bridgeLovrMobileData.handModels) / sizeof(ModelData*); i++) {
+    lovrRelease(ModelData, bridgeLovrMobileData.handModels[i]);
   }
   memset(&bridgeLovrMobileData, 0, sizeof(bridgeLovrMobileData));
 }

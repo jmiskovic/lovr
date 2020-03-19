@@ -100,7 +100,7 @@ typedef struct HeadsetInterface {
   bool (*isDown)(Device device, DeviceButton button, bool* down, bool* changed);
   bool (*isTouched)(Device device, DeviceButton button, bool* touched);
   bool (*getAxis)(Device device, DeviceAxis axis, float* value);
-  bool (*getSkeleton)(Device device, float* poses, uint32_t* poseCount);
+  bool (*getSkeleton)(Device device, float* poses, uint32_t* poseCount, float* scale);
   bool (*vibrate)(Device device, float strength, float duration, float frequency);
   struct ModelData* (*newModelData)(Device device);
   void (*renderTo)(void (*callback)(void*), void* userdata);
