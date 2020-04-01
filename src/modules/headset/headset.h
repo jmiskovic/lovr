@@ -17,7 +17,8 @@ typedef enum {
   DRIVER_OPENVR,
   DRIVER_OPENXR,
   DRIVER_WEBVR,
-  DRIVER_WEBXR
+  DRIVER_WEBXR,
+  DRIVER_PICO
 } HeadsetDriver;
 
 typedef enum {
@@ -117,6 +118,7 @@ extern HeadsetInterface lovrHeadsetWebXRDriver;
 extern HeadsetInterface lovrHeadsetDesktopDriver;
 extern HeadsetInterface lovrHeadsetOculusMobileDriver;
 extern HeadsetInterface lovrHeadsetLeapMotionDriver;
+extern HeadsetInterface lovrHeadsetPicoDriver;
 
 // Active drivers
 extern HeadsetInterface* lovrHeadsetDriver;
