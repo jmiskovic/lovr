@@ -1,6 +1,7 @@
 ROOT = $(TUP_CWD)
 
 ## Base
+CC = @(CC)
 CFLAGS += -std=c99 -pedantic
 CFLAGS += -D_POSIX_C_SOURCE=200809L
 CFLAGS += -I$(ROOT)/src
@@ -90,6 +91,20 @@ ifeq ($(PLATFORM),web)
   LDFLAGS_@(THREAD) += -s USE_PTHREADS=1
 endif
 
+ifeq ($(PLATFORM),android)
+  CC = @(ANDROID_SDK)/sdk/ndk-bundle/toolchains/llvm/prebuilt/@(ANDROID_HOST_TAG)/bin/clang
+  GLUE = @(ANDROID_SDK)/sdk/ndk-bundle/sources/android/native_app_glue
+  CFLAGS += --target=@(ANDROID_TARGET)
+  CFLAGS += -I$(GLUE)
+  LDFLAGS += --target=@(ANDROID_TARGET)
+  LDFLAGS += -shared
+  LDFLAGS += -landroid
+  LDFLAGS_@(PICO) += -L$(ROOT)/deps/pico/@(ANDROID_ABI) -lPvr_NativeSDK
+  PREFIX = lib
+  SUFFIX = .so
+  SO = so
+endif
+
 ## Libraries
 ifeq ($(PLATFORM),web)
   CFLAGS += -I$(ROOT)/deps/lua/src -I$(ROOT)/build/lua
@@ -111,7 +126,9 @@ else
   ifeq (@(LUAJIT),y)
     CFLAGS += -I$(ROOT)/deps/luajit/src
     LDFLAGS += -L$(ROOT)/build/luajit/src -lluajit
-    LIBS += $(ROOT)/build/luajit/src/libluajit.$(SO)
+    ifneq ($(PLATFORM),android)
+      LIBS += $(ROOT)/build/luajit/src/libluajit.$(SO)
+    endif
   else
     CFLAGS += -I$(ROOT)/deps/lua/src -I$(ROOT)/build/lua
     LDFLAGS += -L$(ROOT)/build/lua -llua
@@ -120,7 +137,9 @@ else
   # msdfgen
   CFLAGS_@(DATA) += -I$(ROOT)/deps/msdfgen
   LDFLAGS_@(DATA) += -L$(ROOT)/build/lib_msdfgen -lmsdfgen
-  LIBS_@(DATA) += $(ROOT)/build/lib_msdfgen/libmsdfgen.$(SO)
+  ifneq ($(PLATFORM),android)
+    LIBS_@(DATA) += $(ROOT)/build/lib_msdfgen/libmsdfgen.$(SO)
+  endif
 
   # ode
   CFLAGS_@(PHYSICS) += -I$(ROOT)/deps/ode/include -I$(ROOT)/build/ode/include
@@ -128,9 +147,11 @@ else
   LIBS_@(PHYSICS) += $(ROOT)/build/ode/libode.$(SO)
 
   # glfw
-  CFLAGS += -I$(ROOT)/deps/glfw/include
-  LDFLAGS += -L$(ROOT)/build/glfw/src -lglfw
-  LIBS += $(ROOT)/build/glfw/src/libglfw.*$(SO)*
+  ifneq ($(PLATFORM),android)
+    CFLAGS += -I$(ROOT)/deps/glfw/include
+    LDFLAGS += -L$(ROOT)/build/glfw/src -lglfw
+    LIBS += $(ROOT)/build/glfw/src/libglfw.*$(SO)*
+  endif
 
   # OpenVR
   CFLAGS_@(OPENVR) += -I$(ROOT)/deps/openvr/headers
@@ -150,7 +171,7 @@ CFLAGS += @(EXTRA_CFLAGS)
 LDFLAGS += @(EXTRA_LDFLAGS)
 
 ## Macros
-!cc = |> ^ CC %b^ @(CC) $(CFLAGS_y) $(CFLAGS) -c %f -o %o |>
-!ld = |> ^ LD %o^ @(CC) -o %o %f $(LDFLAGS_y) $(LDFLAGS) |>
+!cc = |> ^ CC %b^ $(CC) $(CFLAGS_y) $(CFLAGS) -c %f -o %o |>
+!ld = |> ^ LD %o^ $(CC) -o %o %f $(LDFLAGS_y) $(LDFLAGS) |>
 !xd = |> ^ XD %f^ xxd -i %f > %o |>
 !cp = |> ^ CP %b^ cp %f %o |>
