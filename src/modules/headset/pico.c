@@ -9,23 +9,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-
-static struct {
-
-} state;
-
-static bool pico_init() {
-
-
+static bool pico_init(float offset, uint32_t msaa) {
   return false;
 }
 
 static void pico_destroy(void) {
-  
+  //
 }
 
 static bool pico_getName(char* name, size_t length) {
-  
   return false;
 }
 
