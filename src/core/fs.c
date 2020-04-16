@@ -428,7 +428,7 @@ size_t fs_getBundleId(char* buffer, size_t size) {
   snprintf(path, 32, "/proc/%i/cmdline", (int) pid);
   FILE* file = fopen(path, "r");
   if (file) {
-    size_t read = fread(buffer, 1, size, file);
+    fread(buffer, 1, size, file);
     fclose(file);
     return true;
   }
