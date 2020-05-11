@@ -51,6 +51,7 @@ struct Buffer {
   bool mapped;
   bool readable;
   uint8_t incoherent;
+  GLsync sync;
 };
 
 struct Texture {
@@ -2124,6 +2125,7 @@ Buffer* lovrBufferCreate(size_t size, void* data, BufferType type, BufferUsage u
   buffer->readable = readable;
   buffer->type = type;
   buffer->usage = usage;
+  buffer->sync = 0;
   glGenBuffers(1, &buffer->id);
   lovrGpuBindBuffer(type, buffer->id);
   GLenum glType = convertBufferType(type);
@@ -2138,9 +2140,10 @@ Buffer* lovrBufferCreate(size_t size, void* data, BufferType type, BufferUsage u
   }
 #else
   if (GLAD_GL_ARB_buffer_storage) {
-    GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | (readable ? GL_MAP_READ_BIT : 0);
+    GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT | (readable ? GL_MAP_READ_BIT : 0);
     glBufferStorage(glType, size, data, flags);
-    buffer->data = glMapBufferRange(glType, 0, size, flags | GL_MAP_FLUSH_EXPLICIT_BIT);
+    flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+    buffer->data = glMapBufferRange(glType, 0, size, flags);
   } else {
     glBufferData(glType, size, data, convertBufferUsage(usage));
   }
@@ -2172,8 +2175,25 @@ BufferUsage lovrBufferGetUsage(Buffer* buffer) {
   return buffer->usage;
 }
 
+void lovrBufferLock(Buffer* buffer) {
+  if (buffer->sync) {
+    glDeleteSync(buffer->sync);
+  }
+  buffer->sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+}
+
+void lovrBufferWait(Buffer* buffer) {
+  if (buffer->sync) {
+    GLenum waitReturn;
+    do {
+      waitReturn = glClientWaitSync(buffer->sync, GL_SYNC_FLUSH_COMMANDS_BIT, 1);
+    } while (waitReturn != GL_ALREADY_SIGNALED && waitReturn != GL_CONDITION_SATISFIED);
+  }
+}
+
 void* lovrBufferMap(Buffer* buffer, size_t offset) {
 #ifndef LOVR_WEBGL
+  lovrBufferWait(buffer);
   if (!GLAD_GL_ARB_buffer_storage && !buffer->mapped) {
     buffer->mapped = true;
     lovrGpuBindBuffer(buffer->type, buffer->id);
@@ -2188,6 +2208,7 @@ void* lovrBufferMap(Buffer* buffer, size_t offset) {
 void lovrBufferFlush(Buffer* buffer, size_t offset, size_t size) {
   buffer->flushFrom = MIN(buffer->flushFrom, offset);
   buffer->flushTo = MAX(buffer->flushTo, offset + size);
+  buffer->sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 }
 
 void lovrBufferUnmap(Buffer* buffer) {
@@ -2235,6 +2256,7 @@ void lovrBufferDiscard(Buffer* buffer) {
   if (!GLAD_GL_ARB_buffer_storage) {
     buffer->mapped = true;
   }
+  lovrBufferLock(buffer);
 #endif
 }
 
