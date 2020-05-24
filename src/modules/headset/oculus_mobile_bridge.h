@@ -137,6 +137,14 @@ typedef struct {
   ModelData* handModels[2];
 } BridgeLovrInitData;
 
+typedef enum {
+  BRIDGE_LOVR_KEYPRESS,
+  BRIDGE_LOVR_KEYRELEASE,
+  BRIDGE_LOVR_TEXTINPUT,
+} BridgeEventType;
+
+LOVR_EXPORT void bridgeKeyEvent(BridgeEventType type, int key);
+
 LOVR_EXPORT void bridgeLovrInit(BridgeLovrInitData *initData);
 
 LOVR_EXPORT void bridgeLovrUpdate(BridgeLovrUpdateData *updateData);

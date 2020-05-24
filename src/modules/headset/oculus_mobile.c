@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <math.h>
+#include <ctype.h>
 
 #define LOG(...)  __android_log_print(ANDROID_LOG_DEBUG, "LOVR", __VA_ARGS__)
 #define INFO(...) __android_log_print(ANDROID_LOG_INFO,  "LOVR", __VA_ARGS__)
@@ -531,6 +532,324 @@ void bridgeLovrUpdate(BridgeLovrUpdateData *updateData) {
     }
   }
 }
+
+static const char* const keycodes[] = {
+  "unknown",
+  "soft_left",
+  "soft_right",
+  "home",
+  "back",
+  "call",
+  "endcall",
+  "0",
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "*",
+  "#",
+  "up",
+  "down",
+  "left",
+  "right",
+  "dpad_center",
+  "volume_up",
+  "volume_down",
+  "power",
+  "camera",
+  "clear",
+  "a",
+  "b",
+  "c",
+  "d",
+  "e",
+  "f",
+  "g",
+  "h",
+  "i",
+  "j",
+  "k",
+  "l",
+  "m",
+  "n",
+  "o",
+  "p",
+  "q",
+  "r",
+  "s",
+  "t",
+  "u",
+  "v",
+  "w",
+  "x",
+  "y",
+  "z",
+  ",",
+  ".",
+  "lalt",
+  "ralt",
+  "lshift",
+  "rshift",
+  "tab",
+  "space",
+  "sym",
+  "explorer",
+  "envelope",
+  "enter",
+  "backspace",
+  "`",
+  "-",
+  "=",
+  "[",
+  "]",
+  "\\",
+  ";",
+  "'",
+  "/",
+  "@",
+  "num",
+  "headsethook",
+  "focus",
+  "+",
+  "menu",
+  "notification",
+  "search",
+  "media_play_pause",
+  "media_stop",
+  "media_next",
+  "media_previous",
+  "media_rewind",
+  "media_fast_forward",
+  "mute",
+  "pageup",
+  "pagedown",
+  "pictsymbols",
+  "switch_charset",
+  "button_a",
+  "button_b",
+  "button_c",
+  "button_x",
+  "button_y",
+  "button_z",
+  "button_l1",
+  "button_r1",
+  "button_l2",
+  "button_r2",
+  "button_thumbl",
+  "button_thumbr",
+  "button_start",
+  "button_select",
+  "button_mode",
+  "escape",
+  "delete",
+  "lctrl",
+  "rctrl",
+  "capslock",
+  "scrolllock",
+  "meta_left",
+  "meta_right",
+  "function",
+  "printscreen",
+  "pause",
+  "home",
+  "end",
+  "insert",
+  "forward",
+  "media_play",
+  "media_pause",
+  "media_close",
+  "media_eject",
+  "media_record",
+  "f1",
+  "f2",
+  "f3",
+  "f4",
+  "f5",
+  "f6",
+  "f7",
+  "f8",
+  "f9",
+  "f10",
+  "f11",
+  "f12",
+  "numlock",
+  "kp0",
+  "kp1",
+  "kp2",
+  "kp3",
+  "kp4",
+  "kp5",
+  "kp6",
+  "kp7",
+  "kp8",
+  "kp9",
+  "kp/",
+  "kp*",
+  "kp-",
+  "kp+",
+  "kp.",
+  "kp,",
+  "kpenter",
+  "kp=",
+  "kp(",
+  "kp)",
+  "volume_mute",
+  "info",
+  "channel_up",
+  "channel_down",
+  "zoom_in",
+  "zoom_out",
+  "tv",
+  "window",
+  "guide",
+  "dvr",
+  "bookmark",
+  "captions",
+  "settings",
+  "tv_power",
+  "tv_input",
+  "stb_power",
+  "stb_input",
+  "avr_power",
+  "avr_input",
+  "prog_red",
+  "prog_green",
+  "prog_yellow",
+  "prog_blue",
+  "app_switch",
+  "button_1",
+  "button_2",
+  "button_3",
+  "button_4",
+  "button_5",
+  "button_6",
+  "button_7",
+  "button_8",
+  "button_9",
+  "button_10",
+  "button_11",
+  "button_12",
+  "button_13",
+  "button_14",
+  "button_15",
+  "button_16",
+  "language_switch",
+  "manner_mode",
+  "3d_mode",
+  "contacts",
+  "calendar",
+  "music",
+  "calculator",
+  "zenkaku_hankaku",
+  "eisu",
+  "muhenkan",
+  "henkan",
+  "katakana_hiragana",
+  "yen",
+  "ro",
+  "kana",
+  "assist",
+  "brightness_down",
+  "brightness_up",
+  "media_audio_track",
+  "sleep",
+  "wakeup",
+  "pairing",
+  "media_top_menu",
+  "11",
+  "12",
+  "last_channel",
+  "tv_data_service",
+  "voice_assist",
+  "tv_radio_service",
+  "tv_teletext",
+  "tv_number_entry",
+  "tv_terrestrial_analog",
+  "tv_terrestrial_digital",
+  "tv_satellite",
+  "tv_satellite_bs",
+  "tv_satellite_cs",
+  "tv_satellite_service",
+  "tv_network",
+  "tv_antenna_cable",
+  "tv_input_hdmi_1",
+  "tv_input_hdmi_2",
+  "tv_input_hdmi_3",
+  "tv_input_hdmi_4",
+  "tv_input_composite_1",
+  "tv_input_composite_2",
+  "tv_input_component_1",
+  "tv_input_component_2",
+  "tv_input_vga_1",
+  "tv_audio_description",
+  "tv_audio_description_mix_up",
+  "tv_audio_description_mix_down",
+  "tv_zoom_mode",
+  "tv_contents_menu",
+  "tv_media_context_menu",
+  "tv_timer_programming",
+  "help"
+};
+
+bool keyDown[sizeof(keycodes)] = {false};
+
+void bridgeKeyEvent(BridgeEventType type, int key) {
+  CustomEvent eventData;
+  eventData.count = 1;
+  eventData.data[0].type = TYPE_STRING;
+
+  size_t length = 30;
+  eventData.data[0].value.string = malloc(length + 1);
+  lovrAssert(eventData.data[0].value.string, "Out of memory");
+  eventData.data[0].value.string[length] = '\0';
+
+  switch (type){
+    case BRIDGE_LOVR_KEYPRESS:
+      if (key < 0 || key > 260){
+        LOG("key %d out of range", key);
+        return;
+      }
+      keyDown[key] = true;
+      memcpy(eventData.data[0].value.string, keycodes[key], 30);
+      strncpy(eventData.name, "keypressed", MAX_EVENT_NAME_LENGTH - 1);
+      lovrEventPush((Event) { .type = EVENT_CUSTOM, .data.custom = eventData});
+      break;
+    case BRIDGE_LOVR_KEYRELEASE:
+      if (key < 0 || key > 260){
+        LOG("key %d out of range", key);
+        return;
+      }
+      keyDown[key] = true;
+      memcpy(eventData.data[0].value.string, keycodes[key], 30);
+      strncpy(eventData.name, "keyreleased", MAX_EVENT_NAME_LENGTH - 1);
+      lovrEventPush((Event) { .type = EVENT_CUSTOM, .data.custom = eventData});
+      break;
+    case BRIDGE_LOVR_TEXTINPUT:
+      key = key & 0xFF;
+      if (isprint(key)) {
+        eventData.data[0].value.string[0] = key;
+        eventData.data[0].value.string[1] = '\0';
+        strncpy(eventData.name, "textinput", MAX_EVENT_NAME_LENGTH - 1);
+        lovrEventPush((Event) { .type = EVENT_CUSTOM, .data.custom = eventData});
+      }
+      break;
+    default:
+      LOG("Unknown keyboard event\n");
+  }
+}
+/*
+  LOG("received key event\n");
+      lovrEventPush((Event) { .type = EVENT_KEYPRESS, .data.keyboard.key = key});
+      lovrEventPush((Event) { .type = EVENT_KEYRELEASE, .data.keyboard.key = key});
+      lovrEventPush((Event) { .type = EVENT_TEXTINPUT, .data.keyboard.key = key});
+}
+*/
+
 
 void bridgeLovrDraw(BridgeLovrDrawData *drawData) {
   if (!state.renderCallback) // Do not draw if there is nothing to draw.
