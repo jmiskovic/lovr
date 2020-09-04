@@ -50,6 +50,7 @@ struct Buffer {
   bool mapped;
   bool readable;
   uint8_t incoherent;
+  GLsync sync;
 };
 
 struct Texture {
@@ -197,6 +198,22 @@ static struct {
 } state;
 
 // Helper functions
+
+void lovrBufferLock(Buffer* buffer) {
+  if (buffer->sync) {
+    glDeleteSync(buffer->sync);
+  }
+  buffer->sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+}
+
+void lovrBufferWait(Buffer* buffer) {
+  if (buffer->sync) {
+    GLenum waitReturn;
+    do {
+      waitReturn = glClientWaitSync(buffer->sync, GL_SYNC_FLUSH_COMMANDS_BIT, 1);
+    } while (waitReturn != GL_ALREADY_SIGNALED && waitReturn != GL_CONDITION_SATISFIED);
+  }
+}
 
 static GLenum convertCompareMode(CompareMode mode) {
   switch (mode) {
@@ -2195,6 +2212,7 @@ Buffer* lovrBufferCreate(size_t size, void* data, BufferType type, BufferUsage u
   buffer->readable = readable;
   buffer->type = type;
   buffer->usage = usage;
+  buffer->sync = 0;
   glGenBuffers(1, &buffer->id);
   lovrGpuBindBuffer(type, buffer->id);
   GLenum glType = convertBufferType(type);
@@ -2239,6 +2257,7 @@ BufferUsage lovrBufferGetUsage(Buffer* buffer) {
 
 void* lovrBufferMap(Buffer* buffer, size_t offset, bool unsynchronized) {
 #ifndef LOVR_WEBGL
+  lovrBufferWait(buffer);
   if (!buffer->mapped) {
     buffer->mapped = true;
     lovrGpuBindBuffer(buffer->type, buffer->id);
@@ -2295,6 +2314,7 @@ void lovrBufferDiscard(Buffer* buffer) {
   GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_FLUSH_EXPLICIT_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_BUFFER_BIT;
   buffer->data = glMapBufferRange(glType, 0, buffer->size, flags);
   buffer->mapped = true;
+  lovrBufferLock(buffer);
 #endif
 }
 
