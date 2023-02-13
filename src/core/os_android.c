@@ -16,11 +16,28 @@ static struct {
   fn_key* onKeyboardEvent;
   fn_text* onTextEvent;
   fn_permission* onPermissionEvent;
+  bool is_window_open;
+  uint32_t width;
+  uint32_t height;
 } state;
 
+
 static void onAppCmd(struct android_app* app, int32_t cmd) {
-  if (cmd == APP_CMD_DESTROY && state.onQuit) {
-    state.onQuit();
+  switch (cmd) {
+    case APP_CMD_INIT_WINDOW:
+      // The window is being shown, get it ready.
+      state.is_window_open = true;
+      state.width = ANativeWindow_getWidth(app->window);
+      state.height = ANativeWindow_getHeight(app->window);
+      break;
+    case APP_CMD_TERM_WINDOW:
+    case APP_CMD_DESTROY:
+      // The window is being hidden or closed, clean it up.
+      __android_log_write(ANDROID_LOG_DEBUG, "LOVR", "onAppCmd APP_CMD_DESTROY");
+      state.onQuit();
+      break;
+    default:
+      break;
   }
 }
 
@@ -331,19 +348,24 @@ void os_on_permission(fn_permission* callback) {
 }
 
 bool os_window_open(const os_window_config* config) {
-  return true;
+  return state.is_window_open;
 }
 
 bool os_window_is_open() {
-  return false;
+  return state.is_window_open;
+}
+
+uintptr_t os_get_android_window() {
+  return (uintptr_t) state.app->window;
 }
 
 void os_window_get_size(uint32_t* width, uint32_t* height) {
-  *width = *height = 0;
+  *width = state.width;
+  *height = state.height;
 }
 
 float os_window_get_pixel_density(void) {
-  return 0.f;
+  return 1.f;
 }
 
 size_t os_get_home_directory(char* buffer, size_t size) {
