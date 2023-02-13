@@ -676,6 +676,11 @@ typedef struct {
     uint32_t (*createSurface)(void* instance, void** surface);
     void* cacheData;
     size_t cacheSize;
+    union {
+      struct {
+        uintptr_t window;
+      } android;
+    };
     bool surface;
     int vsync;
   } vk;

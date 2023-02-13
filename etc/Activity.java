@@ -12,8 +12,7 @@ public class Activity extends NativeActivity {
       Log.d("LOVR", "Using Pico OpenXR Loader");
       System.loadLibrary("openxr_loader_pico");
     } else {
-      Log.d("LOVR", "Using Generic OpenXR Loader");
-      System.loadLibrary("openxr_loader_generic");
+      Log.d("LOVR", "Skipping OpenXR Loader");
     }
     System.loadLibrary("lovr");
   }

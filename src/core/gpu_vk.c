@@ -1,7 +1,9 @@
 #include "gpu.h"
 #include <string.h>
+#define VK_USE_PLATFORM_ANDROID_KHR
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+#include <vulkan/vulkan_android.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -1804,6 +1806,8 @@ bool gpu_init(gpu_config* config) {
     VK(vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, extensionInfo), "Failed to enumerate instance extensions") return gpu_destroy(), false;
 
     struct { const char* name; bool shouldEnable; bool* flag; } extensions[] = {
+      { "VK_KHR_surface", state.config.vk.surface, NULL },
+      { "VK_KHR_android_surface", state.config.vk.surface, NULL },
       { "VK_KHR_portability_enumeration", true, &state.extensions.portability },
       { "VK_EXT_debug_utils", config->debug, &state.extensions.debug },
       { "VK_EXT_swapchain_colorspace", config->vk.surface, &state.extensions.colorspace },
@@ -1880,8 +1884,23 @@ bool gpu_init(gpu_config* config) {
   }
 
   // Surface
-  if (state.config.vk.surface && state.config.vk.createSurface) {
-    VK(state.config.vk.createSurface(state.instance, (void**) &state.surface.handle), "Surface creation failed") return gpu_destroy(), false;
+  state.config.vk.createSurface = 0;
+  if (state.config.vk.surface) {
+    if (state.config.vk.createSurface) {
+      VK(state.config.vk.createSurface(state.instance, (void**) &state.surface), "Surface creation failed") return gpu_destroy(), false;
+    } else {
+      VkAndroidSurfaceCreateInfoKHR surfaceInfo = {
+        .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+        .pNext = NULL,
+        .flags = 0,
+        .window = (struct ANativeWindow*) state.config.vk.android.window
+      };
+      GPU_DECLARE(vkCreateAndroidSurfaceKHR);
+      GPU_LOAD_INSTANCE(vkCreateAndroidSurfaceKHR);
+      VK(vkCreateAndroidSurfaceKHR(state.instance, &surfaceInfo, NULL, &state.surface), "Surface creation failed") return gpu_destroy(), false;
+#ifdef _WIN32
+#endif
+    }
   }
 
   { // Device
