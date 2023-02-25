@@ -84,8 +84,8 @@ function lovr.boot()
     end
   end
 
-  lovr.system.pollEvents() -- needed for APP_CMD_INIT_WINDOW event in onAppCmd()
   if lovr.system and conf.window then
+    lovr.system.pollEvents() -- needed for APP_CMD_INIT_WINDOW event in onAppCmd()
     lovr.system.openWindow(conf.window)
   end
 
