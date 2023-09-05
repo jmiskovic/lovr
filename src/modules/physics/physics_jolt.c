@@ -122,10 +122,10 @@ World* lovrWorldCreate(float xg, float yg, float zg, bool allowSleep, const char
   world->body_interface = JPH_PhysicsSystem_GetBodyInterface(world->physics_system);
   world->collision_steps = 1;
   world->ref = 1;
-  const uint32_t max_bodies = 1024;
+  const uint32_t max_bodies = 1024 * 2;
   const uint32_t num_body_mutexes = 0; // zero is auto-detect
-  const uint32_t max_body_pairs = 1024;
-  const uint32_t max_contact_constraints = 1024;
+  const uint32_t max_body_pairs = 1024 * 2;
+  const uint32_t max_contact_constraints = 1024 * 2;
 
   JPH_BroadPhaseLayerInterface* broad_phase_layer_interface = JPH_BroadPhaseLayerInterface_Create();
   JPH_BroadPhaseLayerInterface_SetProcs((JPH_BroadPhaseLayerInterface_Procs){
@@ -227,7 +227,8 @@ void lovrWorldSetLinearDamping(World* world, float damping, float threshold) {}
 
 void lovrWorldGetAngularDamping(World* world, float* damping, float* threshold) {}
 
-void lovrWorldSetAngularDamping(World* world, float damping, float threshold) {}
+void lovrWorldSetAngularDamping(World* world, float damping, float threshold) {
+}
 
 bool lovrWorldIsSleepingAllowed(World* world) {}
 
@@ -347,7 +348,9 @@ void lovrColliderSetKinematic(Collider* collider, bool kinematic) {
     JPH_Activation_Activate);
 }
 
-bool lovrColliderIsGravityIgnored(Collider* collider) {}
+bool lovrColliderIsGravityIgnored(Collider* collider) {
+  return JPH_BodyInterface_GetGravityFactor(collider->world->body_interface, collider->id) == 0.f;
+}
 
 
 void lovrColliderSetGravityIgnored(Collider* collider, bool ignored) {
@@ -357,13 +360,25 @@ void lovrColliderSetGravityIgnored(Collider* collider, bool ignored) {
     ignored ? 0.f : 1.f);
 }
 
-bool lovrColliderIsSleepingAllowed(Collider* collider) {}
+bool lovrColliderIsSleepingAllowed(Collider* collider) {
+  return JPH_Body_GetAllowSleeping(collider->body);
+}
 
-void lovrColliderSetSleepingAllowed(Collider* collider, bool allowed) {}
+void lovrColliderSetSleepingAllowed(Collider* collider, bool allowed) {
+  JPH_Body_SetAllowSleeping(collider->body, allowed);
+}
 
-bool lovrColliderIsAwake(Collider* collider) {}
+bool lovrColliderIsAwake(Collider* collider) {
+  return JPH_BodyInterface_IsActive(collider->world->body_interface, collider->id);
+}
 
-void lovrColliderSetAwake(Collider* collider, bool awake) {}
+void lovrColliderSetAwake(Collider* collider, bool awake) {
+  if (awake) {
+    JPH_BodyInterface_ActivateBody(collider->world->body_interface, collider->id);
+  } else {
+    JPH_BodyInterface_DeactivateBody(collider->world->body_interface, collider->id);
+  }
+}
 
 float lovrColliderGetMass(Collider* collider) {}
 
@@ -451,13 +466,29 @@ void lovrColliderSetAngularVelocity(Collider* collider, float x, float y, float 
   JPH_BodyInterface_SetAngularVelocity(collider->world->body_interface, collider->id, &velocity);
 }
 
-void lovrColliderGetLinearDamping(Collider* collider, float* damping, float* threshold) {}
+void lovrColliderGetLinearDamping(Collider* collider, float* damping, float* threshold) {
+  JPH_MotionProperties * properties = JPH_Body_GetMotionProperties(collider->body);
+  *damping = JPH_MotionProperties_GetLinearDamping(properties);
+  *threshold = 0.f; // todo
+}
 
-void lovrColliderSetLinearDamping(Collider* collider, float damping, float threshold) {}
+void lovrColliderSetLinearDamping(Collider* collider, float damping, float threshold) {
+  JPH_MotionProperties * properties = JPH_Body_GetMotionProperties(collider->body);
+  JPH_MotionProperties_SetLinearDamping(properties, damping);
+  // todo: threshold ignored
+}
 
-void lovrColliderGetAngularDamping(Collider* collider, float* damping, float* threshold) {}
+void lovrColliderGetAngularDamping(Collider* collider, float* damping, float* threshold) {
+  JPH_MotionProperties * properties = JPH_Body_GetMotionProperties(collider->body);
+  *damping = JPH_MotionProperties_GetAngularDamping(properties);
+  *threshold = 0.f; // todo
+}
 
-void lovrColliderSetAngularDamping(Collider* collider, float damping, float threshold) {}
+void lovrColliderSetAngularDamping(Collider* collider, float damping, float threshold) {
+  JPH_MotionProperties * properties = JPH_Body_GetMotionProperties(collider->body);
+  JPH_MotionProperties_SetAngularDamping(properties, damping);
+  // todo: threshold ignored
+}
 
 void lovrColliderApplyForce(Collider* collider, float x, float y, float z) {
   JPH_Vec3 force = {

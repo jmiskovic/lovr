@@ -1114,6 +1114,26 @@ const JPH_BodyLockInterface* JPC_PhysicsSystem_GetBodyLockInterfaceNoLock(const 
     return reinterpret_cast<const JPH_BodyLockInterface*>(&joltSystem->GetBodyLockInterfaceNoLock());
 }
 
+void JPH_MotionProperties_SetLinearDamping(JPH_MotionProperties* properties, float damping)
+{
+    reinterpret_cast<JPH::MotionProperties*>(properties)->SetLinearDamping(damping);
+}
+
+float JPH_MotionProperties_GetLinearDamping(JPH_MotionProperties* properties)
+{
+    return reinterpret_cast<JPH::MotionProperties*>(properties)->GetLinearDamping();
+}
+
+void JPH_MotionProperties_SetAngularDamping(JPH_MotionProperties* properties, float damping)
+{
+    reinterpret_cast<JPH::MotionProperties*>(properties)->SetAngularDamping(damping);
+}
+
+float JPH_MotionProperties_GetAngularDamping(JPH_MotionProperties* properties)
+{
+    return reinterpret_cast<JPH::MotionProperties*>(properties)->GetAngularDamping();
+}
+
 const JPH_NarrowPhaseQuery* JPC_PhysicsSystem_GetNarrowPhaseQuery(const JPH_PhysicsSystem* system)
 {
     JPH_ASSERT(system);
@@ -1858,6 +1878,11 @@ void JPH_Body_SetIsSensor(JPH_Body* body, JPH_Bool32 value)
     reinterpret_cast<JPH::Body*>(body)->SetIsSensor(!!value);
 }
 
+JPH_MotionProperties* JPH_Body_GetMotionProperties(JPH_Body* body)
+{
+    return reinterpret_cast<JPH_MotionProperties*>(reinterpret_cast<JPH::Body*>(body)->GetMotionProperties());
+}
+
 JPH_MotionType JPH_Body_GetMotionType(const JPH_Body* body)
 {
     return static_cast<JPH_MotionType>(reinterpret_cast<const JPH::Body*>(body)->GetMotionType());
@@ -1866,6 +1891,14 @@ JPH_MotionType JPH_Body_GetMotionType(const JPH_Body* body)
 void JPH_Body_SetMotionType(JPH_Body* body, JPH_MotionType motionType)
 {
     reinterpret_cast<JPH::Body*>(body)->SetMotionType(static_cast<JPH::EMotionType>(motionType));
+}
+
+bool JPH_Body_GetAllowSleeping(JPH_Body* body) {
+    return reinterpret_cast<JPH::Body*>(body)->GetAllowSleeping();
+}
+
+void JPH_Body_SetAllowSleeping(JPH_Body* body, bool allowSleeping) {
+    reinterpret_cast<JPH::Body*>(body)->SetAllowSleeping(allowSleeping);
 }
 
 float JPH_Body_GetFriction(const JPH_Body* body)

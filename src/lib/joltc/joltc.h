@@ -234,6 +234,7 @@ typedef struct JPH_SoftBodyCreationSettings     JPH_SoftBodyCreationSettings;
 typedef struct JPH_BodyInterface                JPH_BodyInterface;
 typedef struct JPH_BodyLockInterface            JPH_BodyLockInterface;
 typedef struct JPH_NarrowPhaseQuery             JPH_NarrowPhaseQuery;
+typedef struct JPH_MotionProperties             JPH_MotionProperties;
 typedef struct JPH_Body                         JPH_Body;
 
 typedef struct JPH_ConstraintSettings           JPH_ConstraintSettings;
@@ -523,6 +524,15 @@ JPH_CAPI void JPH_BodyLockInterface_LockWrite(const JPH_BodyLockInterface* lockI
 JPH_CAPI void JPH_BodyLockInterface_UnlockWrite(const JPH_BodyLockInterface* lockInterface, JPH_BodyLockWrite* ioLock);
 
 //--------------------------------------------------------------------------------------------------
+// JPH_MotionProperties
+//--------------------------------------------------------------------------------------------------
+JPH_CAPI void JPH_MotionProperties_SetLinearDamping(JPH_MotionProperties* properties, float damping);
+JPH_CAPI float JPH_MotionProperties_GetLinearDamping(JPH_MotionProperties* properties);
+JPH_CAPI void JPH_MotionProperties_SetAngularDamping(JPH_MotionProperties* properties, float damping);
+JPH_CAPI float JPH_MotionProperties_GetAngularDamping(JPH_MotionProperties* properties);
+
+
+//--------------------------------------------------------------------------------------------------
 // JPH_NarrowPhaseQuery
 //--------------------------------------------------------------------------------------------------
 JPH_CAPI JPH_Bool32 JPH_NarrowPhaseQuery_CastRay(const JPH_NarrowPhaseQuery* query,
@@ -541,8 +551,11 @@ JPH_CAPI JPH_Bool32 JPH_Body_IsKinematic(const JPH_Body* body);
 JPH_CAPI JPH_Bool32 JPH_Body_IsDynamic(const JPH_Body* body);
 JPH_CAPI JPH_Bool32 JPH_Body_IsSensor(const JPH_Body* body);
 JPH_CAPI void JPH_Body_SetIsSensor(JPH_Body* body, JPH_Bool32 value);
+JPH_CAPI JPH_MotionProperties* JPH_Body_GetMotionProperties(JPH_Body* body);
 JPH_CAPI JPH_MotionType JPH_Body_GetMotionType(const JPH_Body* body);
 JPH_CAPI void JPH_Body_SetMotionType(JPH_Body* body, JPH_MotionType motionType);
+JPH_CAPI bool JPH_Body_GetAllowSleeping(JPH_Body* body);
+JPH_CAPI void JPH_Body_SetAllowSleeping(JPH_Body* body, bool allowSleeping);
 JPH_CAPI float JPH_Body_GetFriction(const JPH_Body* body);
 JPH_CAPI void JPH_Body_SetFriction(JPH_Body* body, float friction);
 JPH_CAPI float JPH_Body_GetRestitution(const JPH_Body* body);
