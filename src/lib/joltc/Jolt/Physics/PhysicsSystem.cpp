@@ -599,7 +599,12 @@ EPhysicsUpdateError PhysicsSystem::Update(float inDeltaTime, int inCollisionStep
 
 	// Return any errors
 	EPhysicsUpdateError errors = static_cast<EPhysicsUpdateError>(context.mErrors.load(memory_order_acquire));
-	JPH_ASSERT(errors == EPhysicsUpdateError::None, "An error occured during the physics update, see EPhysicsUpdateError for more information");
+	if ((uint32) errors & (uint32) EPhysicsUpdateError::ManifoldCacheFull)
+		Trace("Manifold cache is full; MaxContactConstraints is too small");
+	if ((uint32) errors & (uint32) EPhysicsUpdateError::BodyPairCacheFull)
+		Trace("Body pair cache is full; MaxBodyPairs is too small");
+	if ((uint32) errors & (uint32) EPhysicsUpdateError::ContactConstraintsFull)
+		Trace("Contact constraints buffer is full; MaxContactConstraints is too small");
 	return errors;
 }
 
