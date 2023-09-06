@@ -239,6 +239,7 @@ typedef struct JPH_Body                         JPH_Body;
 
 typedef struct JPH_ConstraintSettings           JPH_ConstraintSettings;
 typedef struct JPH_TwoBodyConstraintSettings    JPH_TwoBodyConstraintSettings;
+typedef struct JPH_DistanceConstraintSettings   JPH_DistanceConstraintSettings;
 typedef struct JPH_PointConstraintSettings      JPH_PointConstraintSettings;
 
 typedef struct JPH_Constraint                   JPH_Constraint;
@@ -380,6 +381,14 @@ JPH_CAPI void JPH_Constraint_Destroy(JPH_Constraint* contraint);
 /* JPH_TwoBodyConstraintSettings */
 
 /* JPH_PointConstraintSettings */
+JPH_CAPI JPH_DistanceConstraintSettings* JPH_DistanceConstraintSettings_Construct(void);
+JPH_CAPI void JPH_DistanceConstraintSettings_GetPoint1(JPH_DistanceConstraintSettings* settings, JPH_RVec3* result);
+JPH_CAPI void JPH_DistanceConstraintSettings_SetPoint1(JPH_DistanceConstraintSettings* settings, const JPH_RVec3* value);
+JPH_CAPI void JPH_DistanceConstraintSettings_GetPoint2(JPH_DistanceConstraintSettings* settings, JPH_RVec3* result);
+JPH_CAPI void JPH_DistanceConstraintSettings_SetPoint2(JPH_DistanceConstraintSettings* settings, const JPH_RVec3* value);
+JPH_CAPI JPH_TwoBodyConstraint* JPH_DistanceConstraintSettings_Create(JPH_DistanceConstraintSettings* settings, JPH_Body* body1, JPH_Body* body2);
+
+
 JPH_CAPI JPH_PointConstraintSettings* JPH_PointConstraintSettings_Create(void);
 JPH_CAPI JPH_ConstraintSpace JPH_PointConstraintSettings_GetSpace(JPH_PointConstraintSettings* settings);
 JPH_CAPI void JPH_PointConstraintSettings_SetSpace(JPH_PointConstraintSettings* settings, JPH_ConstraintSpace space);

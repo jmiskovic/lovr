@@ -34,6 +34,7 @@ __pragma(warning(push, 0))
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
 #include <Jolt/Physics/Constraints/PointConstraint.h>
+#include <Jolt/Physics/Constraints/DistanceConstraint.h>
 
 #ifdef _MSC_VER
 __pragma(warning(pop))
@@ -964,6 +965,55 @@ void JPH_Constraint_Destroy(JPH_Constraint* contraint)
 }
 
 /* JPH_TwoBodyConstraintSettings */
+
+/* JPH_DistanceConstraintSettings */
+JPH_DistanceConstraintSettings* JPH_DistanceConstraintSettings_Construct(void)
+{
+    auto settings = new JPH::DistanceConstraintSettings();
+    return reinterpret_cast<JPH_DistanceConstraintSettings*>(settings);
+}
+
+void JPH_DistanceConstraintSettings_GetPoint1(JPH_DistanceConstraintSettings* settings, JPH_RVec3* result)
+{
+    JPH_ASSERT(settings);
+    auto joltSettings = reinterpret_cast<JPH::PointConstraintSettings*>(settings);
+
+    auto joltVector = joltSettings->mPoint1;
+    FromRVec3(joltVector, result);
+}
+
+void JPH_DistanceConstraintSettings_SetPoint1(JPH_DistanceConstraintSettings* settings, const JPH_RVec3* value)
+{
+    JPH_ASSERT(settings);
+    auto joltSettings = reinterpret_cast<JPH::PointConstraintSettings*>(settings);
+
+    joltSettings->mPoint1 = ToRVec3(value);
+}
+
+void JPH_DistanceConstraintSettings_GetPoint2(JPH_DistanceConstraintSettings* settings, JPH_RVec3* result)
+{
+    JPH_ASSERT(settings);
+    auto joltSettings = reinterpret_cast<JPH::PointConstraintSettings*>(settings);
+
+    auto joltVector = joltSettings->mPoint2;
+    FromRVec3(joltVector, result);
+}
+
+void JPH_DistanceConstraintSettings_SetPoint2(JPH_DistanceConstraintSettings* settings, const JPH_RVec3* value)
+{
+    JPH_ASSERT(settings);
+    auto joltSettings = reinterpret_cast<JPH::PointConstraintSettings*>(settings);
+
+    joltSettings->mPoint2 = ToRVec3(value);
+}
+
+JPH_TwoBodyConstraint* JPH_DistanceConstraintSettings_Create(JPH_DistanceConstraintSettings* settings, JPH_Body* body1, JPH_Body* body2)
+{
+    auto joltBody1 = reinterpret_cast<JPH::Body*>(body1);
+    auto joltBody2 = reinterpret_cast<JPH::Body*>(body2);
+    JPH::TwoBodyConstraint* constraint = reinterpret_cast<JPH::DistanceConstraintSettings*>(settings)->Create(*joltBody1, *joltBody2);
+    return reinterpret_cast<JPH_TwoBodyConstraint*>(static_cast<JPH::DistanceConstraint*>(constraint));
+}
 
 /* JPH_PointConstraintSettings */
 JPH_PointConstraintSettings* JPH_PointConstraintSettings_Create(void)

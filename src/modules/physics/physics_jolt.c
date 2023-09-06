@@ -30,19 +30,25 @@ struct Collider {
   Collider* prev;
   Collider* next;
   arr_t(Shape*) shapes;
+  arr_t(Joint*) joints;
   void* userdata;
 /*
   uint32_t tag;
-  arr_t(Joint*) joints;
 */
 };
-
 
 struct Shape {
   uint32_t ref;
   ShapeType type;
   Collider* collider;
   JPH_Shape* shape;
+  void* userdata;
+};
+
+struct Joint {
+  uint32_t ref;
+  JointType type;
+  JPH_Constraint * constraint;
   void* userdata;
 };
 
@@ -260,6 +266,7 @@ Collider* lovrColliderCreate(World* world, float x, float y, float z) {
   JPH_BodyInterface_AddBody(world->body_interface, collider->id, JPH_Activation_Activate);
 
   arr_init(&collider->shapes, arr_alloc);
+  arr_init(&collider->joints, arr_alloc);
 
   // Adjust the world's collider list
   if (!collider->world->head) {
@@ -304,7 +311,10 @@ Shape** lovrColliderGetShapes(Collider* collider, size_t* count) {
   return collider->shapes.data;
 }
 
-Joint** lovrColliderGetJoints(Collider* collider, size_t* count) {}
+Joint** lovrColliderGetJoints(Collider* collider, size_t* count) {
+  *count = collider->joints.length;
+  return collider->joints.data;
+}
 
 void* lovrColliderGetUserData(Collider* collider) {
   return collider->userdata;
@@ -681,7 +691,9 @@ void lovrJointDestroy(void* ref) {}
 
 void lovrJointDestroyData(Joint* joint) {}
 
-JointType lovrJointGetType(Joint* joint) {}
+JointType lovrJointGetType(Joint* joint) {
+  return joint->type;
+}
 
 void lovrJointGetColliders(Joint* joint, Collider** a, Collider** b) {}
 
@@ -707,7 +719,33 @@ float lovrBallJointGetTightness(Joint* joint) {}
 
 void lovrBallJointSetTightness(Joint* joint, float tightness) {}
 
-DistanceJoint* lovrDistanceJointCreate(Collider* a, Collider* b, float anchor1[3], float anchor2[3]) {}
+DistanceJoint* lovrDistanceJointCreate(Collider* a, Collider* b, float anchor1[3], float anchor2[3]) {
+  lovrAssert(a->world == b->world, "Joint bodies must exist in same World");
+  DistanceJoint* joint = calloc(1, sizeof(DistanceJoint));
+  lovrAssert(joint, "Out of memory");
+  joint->ref = 1;
+  joint->type = JOINT_DISTANCE;
+
+  JPH_DistanceConstraintSettings * settings = JPH_DistanceConstraintSettings_Construct();
+  JPH_RVec3 point1 = {
+    .x = anchor1[0],
+    .y = anchor1[1],
+    .z = anchor1[2]
+  };
+  JPH_RVec3 point2 = {
+    .x = anchor2[0],
+    .y = anchor2[1],
+    .z = anchor2[2]
+  };
+  JPH_DistanceConstraintSettings_SetPoint1(settings, &point1);
+  JPH_DistanceConstraintSettings_SetPoint2(settings, &point2);
+  joint->constraint = (JPH_Constraint *) JPH_DistanceConstraintSettings_Create(settings, a->body, b->body);
+  JPH_PhysicsSystem_AddConstraint(a->world->physics_system, joint->constraint);
+  arr_push(&a->joints, joint);
+  arr_push(&b->joints, joint);
+  lovrRetain(joint);
+  return joint;
+}
 
 void lovrDistanceJointGetAnchors(DistanceJoint* joint, float anchor1[3], float anchor2[3]) {}
 
