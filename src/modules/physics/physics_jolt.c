@@ -233,8 +233,7 @@ void lovrWorldSetLinearDamping(World* world, float damping, float threshold) {}
 
 void lovrWorldGetAngularDamping(World* world, float* damping, float* threshold) {}
 
-void lovrWorldSetAngularDamping(World* world, float damping, float threshold) {
-}
+void lovrWorldSetAngularDamping(World* world, float damping, float threshold) {}
 
 bool lovrWorldIsSleepingAllowed(World* world) {}
 
@@ -390,9 +389,23 @@ void lovrColliderSetAwake(Collider* collider, bool awake) {
   }
 }
 
-float lovrColliderGetMass(Collider* collider) {}
+float lovrColliderGetMass(Collider* collider) {
+   if (collider->shapes.length > 0) {
+    JPH_MotionProperties * motion_properties = JPH_Body_GetMotionProperties(collider->body);
+    return 1.f / JPH_MotionProperties_GetInverseMassUnchecked(motion_properties);
+  }
+  return 0.f;
+}
 
-void lovrColliderSetMass(Collider* collider, float mass) {}
+void lovrColliderSetMass(Collider* collider, float mass) {
+  if (collider->shapes.length > 0) {
+    JPH_MotionProperties * motion_properties = JPH_Body_GetMotionProperties(collider->body);
+    Shape * shape = collider->shapes.data[0];
+    JPH_MassProperties * mass_properties = JPH_Shape_GetMassProperties(shape->shape);
+    JPH_MassProperties_ScaleToMass(mass_properties, mass);
+    JPH_MotionProperties_SetMassProperties(motion_properties, JPH_AllowedDOFs_All, mass_properties);
+  }
+}
 
 void lovrColliderGetMassData(Collider* collider, float* cx, float* cy, float* cz, float* mass, float inertia[6]) {}
 
@@ -566,9 +579,15 @@ bool lovrShapeIsEnabled(Shape* shape) {}
 
 void lovrShapeSetEnabled(Shape* shape, bool enabled) {}
 
-bool lovrShapeIsSensor(Shape* shape) {}
+bool lovrShapeIsSensor(Shape* shape) {
+  //todo: API is misleading, sensor property applies to body and not shape
+  return JPH_Body_IsSensor(shape->collider->body);
+}
 
-void lovrShapeSetSensor(Shape* shape, bool sensor) {}
+void lovrShapeSetSensor(Shape* shape, bool sensor) {
+  //todo: API is misleading, sensor property applies to body and not shape
+  JPH_Body_SetIsSensor(shape->collider->body, sensor);
+}
 
 void* lovrShapeGetUserData(Shape* shape) {
   return shape->userdata;
@@ -618,6 +637,7 @@ void lovrSphereShapeSetRadius(SphereShape* sphere, float radius) {}
 BoxShape* lovrBoxShapeCreate(float w, float h, float d) {
   BoxShape* box = calloc(1, sizeof(BoxShape));
   lovrAssert(box, "Out of memory");
+  box->ref = 1;
   box->type = SHAPE_BOX;
   const JPH_Vec3 halfExtent = {
     .x = w / 2,

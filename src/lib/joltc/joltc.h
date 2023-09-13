@@ -235,6 +235,7 @@ typedef struct JPH_BodyInterface                JPH_BodyInterface;
 typedef struct JPH_BodyLockInterface            JPH_BodyLockInterface;
 typedef struct JPH_NarrowPhaseQuery             JPH_NarrowPhaseQuery;
 typedef struct JPH_MotionProperties             JPH_MotionProperties;
+typedef struct JPH_MassProperties               JPH_MassProperties;
 typedef struct JPH_Body                         JPH_Body;
 
 typedef struct JPH_ConstraintSettings           JPH_ConstraintSettings;
@@ -286,6 +287,13 @@ JPH_CAPI void JPH_JobSystem_Destroy(JPH_JobSystem* system);
 
 /* JPH_ShapeSettings */
 JPH_CAPI void JPH_ShapeSettings_Destroy(JPH_ShapeSettings* settings);
+
+/* JPH_Shape */
+JPH_CAPI JPH_MassProperties * JPH_Shape_GetMassProperties(const JPH_Shape* shape);
+
+/* JPH_ConvexShape */
+JPH_CAPI float JPH_ConvexShape_GetDensity(JPH_ConvexShape* shape);
+JPH_CAPI void JPH_ConvexShape_SetDensity(JPH_ConvexShape* shape, float inDensity);
 
 /* BoxShape */
 JPH_CAPI JPH_BoxShapeSettings* JPH_BoxShapeSettings_Create(const JPH_Vec3* halfExtent, float convexRadius);
@@ -539,7 +547,13 @@ JPH_CAPI void JPH_MotionProperties_SetLinearDamping(JPH_MotionProperties* proper
 JPH_CAPI float JPH_MotionProperties_GetLinearDamping(JPH_MotionProperties* properties);
 JPH_CAPI void JPH_MotionProperties_SetAngularDamping(JPH_MotionProperties* properties, float damping);
 JPH_CAPI float JPH_MotionProperties_GetAngularDamping(JPH_MotionProperties* properties);
+JPH_CAPI float JPH_MotionProperties_GetInverseMassUnchecked(JPH_MotionProperties* properties);
+JPH_CAPI void JPH_MotionProperties_SetMassProperties(JPH_MotionProperties* properties, JPH_AllowedDOFs allowedDOFs, JPH_MassProperties* massProperties);
 
+//--------------------------------------------------------------------------------------------------
+// JPH_MassProperties
+//--------------------------------------------------------------------------------------------------
+JPH_CAPI void JPH_MassProperties_ScaleToMass(JPH_MassProperties* properties, float mass);
 
 //--------------------------------------------------------------------------------------------------
 // JPH_NarrowPhaseQuery
