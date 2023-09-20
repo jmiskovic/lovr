@@ -192,7 +192,9 @@ void lovrWorldSetStepCount(World* world, int iterations) {
   world->collision_steps = iterations;
 }
 
-void lovrWorldComputeOverlaps(World* world) {}
+void lovrWorldComputeOverlaps(World* world) {
+  //arr_clear(&world->overlaps);
+}
 
 int lovrWorldGetNextOverlap(World* world, Shape** a, Shape** b) {}
 
@@ -263,8 +265,8 @@ Collider* lovrColliderCreate(World* world, float x, float y, float z) {
   collider->world = world;
   const JPH_RVec3 position = { .x = x, .y = y, .z = z };
   const JPH_Quat rotation = { .x = 0.f, .y = 0.f, .z = 0.f, .w = 1.f };
-  // todo: a temp shape is created, to be replaced in lovrColliderAddShape
 
+  // todo: a temp shape is created, to be replaced in lovrColliderAddShape
   JPH_Shape* shape = (JPH_Shape *) JPH_SphereShape_Create(1);
   JPH_BodyCreationSettings* settings = JPH_BodyCreationSettings_Create3(
     shape, &position, &rotation, JPH_MotionType_Dynamic, OBJ_LAYER_MOVING);
@@ -572,8 +574,15 @@ void lovrColliderGetLinearVelocityFromLocalPoint(Collider* collider, float x, fl
 
 void lovrColliderGetLinearVelocityFromWorldPoint(Collider* collider, float wx, float wy, float wz, float* vx, float* vy, float* vz) {}
 
-void lovrColliderGetAABB(Collider* collider, float aabb[6]) {}
-
+void lovrColliderGetAABB(Collider* collider, float aabb[6]) {
+  JPH_AABox box = JPH_Body_GetWorldSpaceBounds(collider->body);
+  aabb[0] = box.min.x;
+  aabb[1] = box.max.x;
+  aabb[2] = box.min.y;
+  aabb[3] = box.max.y;
+  aabb[4] = box.min.z;
+  aabb[5] = box.max.z;
+}
 
 void lovrShapeDestroy(void* ref) {}
 
@@ -618,6 +627,7 @@ void lovrShapeGetPosition(Shape* shape, float* x, float* y, float* z) {
 void lovrShapeSetPosition(Shape* shape, float x, float y, float z) {}
 
 void lovrShapeGetOrientation(Shape* shape, float* orientation) {
+  // todo: composite shapes
   orientation[0] = 0.f;
   orientation[1] = 0.f;
   orientation[2] = 0.f;
@@ -628,7 +638,10 @@ void lovrShapeSetOrientation(Shape* shape, float* orientation) {}
 
 void lovrShapeGetMass(Shape* shape, float density, float* cx, float* cy, float* cz, float* mass, float inertia[6]) {}
 
-void lovrShapeGetAABB(Shape* shape, float aabb[6]) {}
+void lovrShapeGetAABB(Shape* shape, float aabb[6]) {
+  // todo: with composite shapes this is no longer correct
+  lovrColliderGetAABB(shape->collider, aabb);
+}
 
 SphereShape* lovrSphereShapeCreate(float radius) {
   lovrCheck(radius > 0.f, "SphereShape radius must be positive");
@@ -644,7 +657,10 @@ float lovrSphereShapeGetRadius(SphereShape* sphere) {
   return JPH_SphereShape_GetRadius((JPH_SphereShape*) sphere->shape);
 }
 
-void lovrSphereShapeSetRadius(SphereShape* sphere, float radius) {}
+void lovrSphereShapeSetRadius(SphereShape* sphere, float radius) {
+  lovrLog(LOG_WARN, "PHY", "Jolt SphereShape radius is read-only");
+  // todo: no setter available, but the shape could be removed and re-added
+}
 
 BoxShape* lovrBoxShapeCreate(float w, float h, float d) {
   BoxShape* box = calloc(1, sizeof(BoxShape));
@@ -715,7 +731,28 @@ float lovrCylinderShapeGetLength(CylinderShape* Cylinder) {
 
 void lovrCylinderShapeSetLength(CylinderShape* cylinder, float length) {}
 
-MeshShape* lovrMeshShapeCreate(int vertexCount, float vertices[], int indexCount, uint32_t indices[]) {}
+MeshShape* lovrMeshShapeCreate(int vertexCount, float vertices[], int indexCount, uint32_t indices[]) {
+  MeshShape* mesh = calloc(1, sizeof(MeshShape));
+  lovrAssert(mesh, "Out of memory");
+  mesh->ref = 1;
+  mesh->type = SHAPE_MESH;
+
+  int triangleCount = indexCount / 3;
+  JPH_IndexedTriangle * indexedTriangles = malloc(triangleCount * sizeof(JPH_IndexedTriangle));
+  for (int i = 0; i < triangleCount; i++) {
+    indexedTriangles[i].i1 = indices[i * 3 + 0];
+    indexedTriangles[i].i2 = indices[i * 3 + 1];
+    indexedTriangles[i].i3 = indices[i * 3 + 2];
+    indexedTriangles[i].materialIndex = 0;
+  }
+  JPH_MeshShapeSettings * shape_settings = JPH_MeshShapeSettings_Create2(
+    (const JPH_Vec3*) vertices,
+    vertexCount,
+    indexedTriangles,
+    triangleCount);
+  mesh->shape = (JPH_Shape *) JPH_MeshShapeSettings_CreateShape(shape_settings);
+  return mesh;
+}
 
 TerrainShape* lovrTerrainShapeCreate(float* vertices, uint32_t widthSamples, uint32_t depthSamples, float horizontalScale, float verticalScale) {}
 
@@ -777,27 +814,78 @@ void lovrJointGetColliders(Joint* joint, Collider** a, Collider** b) {
   }
 }
 
-void* lovrJointGetUserData(Joint* joint) {}
+void* lovrJointGetUserData(Joint* joint) {
+  return joint->userdata;
+}
 
-void lovrJointSetUserData(Joint* joint, void* data) {}
+void lovrJointSetUserData(Joint* joint, void* data) {
+  joint->userdata = data;
+}
 
-bool lovrJointIsEnabled(Joint* joint) {}
+bool lovrJointIsEnabled(Joint* joint) {
+  return JPH_Constraint_GetEnabled(joint->constraint);
+}
 
-void lovrJointSetEnabled(Joint* joint, bool enable) {}
+void lovrJointSetEnabled(Joint* joint, bool enable) {
+  JPH_Constraint_SetEnabled(joint->constraint, enable);
+}
 
-BallJoint* lovrBallJointCreate(Collider* a, Collider* b, float anchor[3]) {}
+BallJoint* lovrBallJointCreate(Collider* a, Collider* b, float anchor[3]) {
+  lovrAssert(a->world == b->world, "Joint bodies must exist in same World");
+  BallJoint* joint = calloc(1, sizeof(BallJoint));
+  lovrAssert(joint, "Out of memory");
+  joint->ref = 1;
+  joint->type = JOINT_BALL;
 
-void lovrBallJointGetAnchors(BallJoint* joint, float anchor1[3], float anchor2[3]) {}
+  JPH_PointConstraintSettings * settings = JPH_PointConstraintSettings_Create();
+  JPH_RVec3 point1 = {
+    .x = anchor[0],
+    .y = anchor[1],
+    .z = anchor[2]
+  };
+  JPH_RVec3 point2 = {
+    .x = anchor[0],
+    .y = anchor[1],
+    .z = anchor[2]
+  };
+  JPH_PointConstraintSettings_SetPoint1(settings, &point1);
+  JPH_PointConstraintSettings_SetPoint2(settings, &point2);
+  joint->constraint = (JPH_Constraint *) JPH_PointConstraintSettings_CreateConstraint(settings, a->body, b->body);
+  JPH_PhysicsSystem_AddConstraint(a->world->physics_system, joint->constraint);
+  arr_push(&a->joints, joint);
+  arr_push(&b->joints, joint);
+  lovrRetain(joint);
+  return joint;
+}
 
-void lovrBallJointSetAnchor(BallJoint* joint, float anchor[3]) {}
+void lovrBallJointGetAnchors(BallJoint* joint, float anchor1[3], float anchor2[3]) {
+  lovrJointGetAnchors((Joint*) joint, anchor1, anchor2);
+}
 
-float lovrBallJointGetResponseTime(Joint* joint) {}
+void lovrBallJointSetAnchor(BallJoint* joint, float anchor[3]) {
+  JPH_RVec3 point;
+  point.x = anchor[0];
+  point.y = anchor[1];
+  point.z = anchor[2];
+  JPH_PointConstraint_SetPoint1((JPH_PointConstraint *) joint->constraint, JPH_ConstraintSpace_WorldSpace, &point);
+  JPH_PointConstraint_SetPoint2((JPH_PointConstraint *) joint->constraint, JPH_ConstraintSpace_WorldSpace, &point);
+}
 
-void lovrBallJointSetResponseTime(Joint* joint, float responseTime) {}
+float lovrBallJointGetResponseTime(Joint* joint) {
+  lovrLog(LOG_WARN, "PHY", "Jolt does not support BallJoint response time");
+}
 
-float lovrBallJointGetTightness(Joint* joint) {}
+void lovrBallJointSetResponseTime(Joint* joint, float responseTime) {
+  lovrLog(LOG_WARN, "PHY", "Jolt does not support BallJoint response time");
+}
 
-void lovrBallJointSetTightness(Joint* joint, float tightness) {}
+float lovrBallJointGetTightness(Joint* joint) {
+  lovrLog(LOG_WARN, "PHY", "Jolt does not support BallJoint tightness");
+}
+
+void lovrBallJointSetTightness(Joint* joint, float tightness) {
+  lovrLog(LOG_WARN, "PHY", "Jolt does not support BallJoint tightness");
+}
 
 DistanceJoint* lovrDistanceJointCreate(Collider* a, Collider* b, float anchor1[3], float anchor2[3]) {
   lovrAssert(a->world == b->world, "Joint bodies must exist in same World");
@@ -806,7 +894,7 @@ DistanceJoint* lovrDistanceJointCreate(Collider* a, Collider* b, float anchor1[3
   joint->ref = 1;
   joint->type = JOINT_DISTANCE;
 
-  JPH_DistanceConstraintSettings * settings = JPH_DistanceConstraintSettings_Construct();
+  JPH_DistanceConstraintSettings * settings = JPH_DistanceConstraintSettings_Create();
   JPH_RVec3 point1 = {
     .x = anchor1[0],
     .y = anchor1[1],
@@ -819,7 +907,7 @@ DistanceJoint* lovrDistanceJointCreate(Collider* a, Collider* b, float anchor1[3
   };
   JPH_DistanceConstraintSettings_SetPoint1(settings, &point1);
   JPH_DistanceConstraintSettings_SetPoint2(settings, &point2);
-  joint->constraint = (JPH_Constraint *) JPH_DistanceConstraintSettings_Create(settings, a->body, b->body);
+  joint->constraint = (JPH_Constraint *) JPH_DistanceConstraintSettings_CreateConstraint(settings, a->body, b->body);
   JPH_PhysicsSystem_AddConstraint(a->world->physics_system, joint->constraint);
   arr_push(&a->joints, joint);
   arr_push(&b->joints, joint);
@@ -850,7 +938,7 @@ float lovrDistanceJointGetResponseTime(Joint* joint) {
 }
 
 void lovrDistanceJointSetResponseTime(Joint* joint, float responseTime) {
-  JPH_SpringSettings* settings = JPH_SpringSettings_Construct(1.f / responseTime, 0.f);
+  JPH_SpringSettings* settings = JPH_SpringSettings_Create(1.f / responseTime, 0.f);
   JPH_DistanceConstraint_SetLimitsSpringSettings((JPH_DistanceConstraint *) joint->constraint, settings);
 }
 
@@ -873,7 +961,7 @@ HingeJoint* lovrHingeJointCreate(Collider* a, Collider* b, float anchor[3], floa
   joint->ref = 1;
   joint->type = JOINT_HINGE;
 
-  JPH_HingeConstraintSettings* settings = JPH_HingeConstraintSettings_Construct();
+  JPH_HingeConstraintSettings* settings = JPH_HingeConstraintSettings_Create();
 
   JPH_RVec3 point = {
     .x = anchor[0],
@@ -890,7 +978,7 @@ HingeJoint* lovrHingeJointCreate(Collider* a, Collider* b, float anchor[3], floa
   JPH_HingeConstraintSettings_SetPoint2(settings, &point);
   JPH_HingeConstraintSettings_SetHingeAxis1(settings, &axisVec);
   JPH_HingeConstraintSettings_SetHingeAxis2(settings, &axisVec);
-  joint->constraint = (JPH_Constraint *) JPH_HingeConstraintSettings_Create(settings, a->body, b->body);
+  joint->constraint = (JPH_Constraint *) JPH_HingeConstraintSettings_CreateConstraint(settings, a->body, b->body);
   JPH_PhysicsSystem_AddConstraint(a->world->physics_system, joint->constraint);
   arr_push(&a->joints, joint);
   arr_push(&b->joints, joint);
@@ -911,16 +999,17 @@ void lovrHingeJointGetAxis(HingeJoint* joint, float axis[3]) {
   JPH_RVec3 resultAxis;
   JPH_HingeConstraintSettings * settings = JPH_HingeConstraint_GetSettings((JPH_HingeConstraint *) joint->constraint);
   JPH_HingeConstraintSettings_GetHingeAxis1(settings, &resultAxis);
+  // todo: convert to world coordinates
   axis[0] = resultAxis.x;
   axis[1] = resultAxis.y;
   axis[2] = resultAxis.z;
-  //JPH_ConstraintSettings_Destroy((JPH_ConstraintSettings *) settings);
 }
 
 void lovrHingeJointSetAxis(HingeJoint* joint, float axis[3]) {
   lovrLog(LOG_WARN, "PHY", "Jolt does not support modifying joint axis after creation");
   // todo: no setter available, but the constraint could be removed and re-added
 }
+
 
 float lovrHingeJointGetAngle(HingeJoint* joint) {
   return -JPH_HingeConstraint_GetCurrentAngle((JPH_HingeConstraint *) joint->constraint);
@@ -944,18 +1033,51 @@ void lovrHingeJointSetUpperLimit(HingeJoint* joint, float limit) {
   JPH_HingeConstraint_SetLimits((JPH_HingeConstraint *) joint->constraint, lower_limit, limit);
 }
 
-SliderJoint* lovrSliderJointCreate(Collider* a, Collider* b, float axis[3]) {}
+SliderJoint* lovrSliderJointCreate(Collider* a, Collider* b, float axis[3]) {
+  lovrAssert(a->world == b->world, "Joint bodies must exist in the same World");
+
+  SliderJoint* joint = calloc(1, sizeof(SliderJoint));
+  lovrAssert(joint, "Out of memory");
+  joint->ref = 1;
+  joint->type = JOINT_SLIDER;
+
+  JPH_SliderConstraintSettings* settings = JPH_SliderConstraintSettings_Create();
+  JPH_RVec3 axisVec = {
+    .x = axis[0],
+    .y = axis[1],
+    .z = axis[2]
+  };
+  JPH_SliderConstraintSettings_SetSliderAxis(settings, &axisVec);
+  joint->constraint = (JPH_Constraint *) JPH_SliderConstraintSettings_CreateConstraint(settings, a->body, b->body);
+  JPH_PhysicsSystem_AddConstraint(a->world->physics_system, joint->constraint);
+  arr_push(&a->joints, joint);
+  arr_push(&b->joints, joint);
+  lovrRetain(joint);
+  return joint;
+}
 
 void lovrSliderJointGetAxis(SliderJoint* joint, float axis[3]) {}
 
 void lovrSliderJointSetAxis(SliderJoint* joint, float axis[3]) {}
 
-float lovrSliderJointGetPosition(SliderJoint* joint) {}
+float lovrSliderJointGetPosition(SliderJoint* joint) {
+  return JPH_SliderConstraint_GetCurrentPosition((JPH_SliderConstraint *) joint->constraint);
+}
 
-float lovrSliderJointGetLowerLimit(SliderJoint* joint) {}
+float lovrSliderJointGetLowerLimit(SliderJoint* joint) {
+  return JPH_SliderConstraint_GetLimitsMin((JPH_SliderConstraint *) joint->constraint);
+}
 
-void lovrSliderJointSetLowerLimit(SliderJoint* joint, float limit) {}
+void lovrSliderJointSetLowerLimit(SliderJoint* joint, float limit) {
+  float upper_limit = JPH_SliderConstraint_GetLimitsMax((JPH_SliderConstraint *) joint->constraint);
+  JPH_SliderConstraint_SetLimits((JPH_SliderConstraint *) joint->constraint, limit, upper_limit);
+}
 
-float lovrSliderJointGetUpperLimit(SliderJoint* joint) {}
+float lovrSliderJointGetUpperLimit(SliderJoint* joint) {
+  return JPH_SliderConstraint_GetLimitsMax((JPH_SliderConstraint *) joint->constraint);
+}
 
-void lovrSliderJointSetUpperLimit(SliderJoint* joint, float limit) {}
+void lovrSliderJointSetUpperLimit(SliderJoint* joint, float limit) {
+  float lower_limit = JPH_SliderConstraint_GetLimitsMin((JPH_SliderConstraint *) joint->constraint);
+  JPH_SliderConstraint_SetLimits((JPH_SliderConstraint *) joint->constraint, lower_limit, limit);
+}
