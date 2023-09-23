@@ -229,25 +229,45 @@ void lovrWorldSetGravity(World* world, float x, float y, float z) {
   JPH_PhysicsSystem_SetGravity(world->physics_system, &gravity);
 }
 
-float lovrWorldGetResponseTime(World* world) {}
+float lovrWorldGetResponseTime(World* world) {
+  lovrLog(LOG_WARN, "PHY", "Jolt doesn't support global ResponseTime option");
+}
 
-void lovrWorldSetResponseTime(World* world, float responseTime) {}
+void lovrWorldSetResponseTime(World* world, float responseTime) {
+  lovrLog(LOG_WARN, "PHY", "Jolt doesn't support global ResponseTime option");
+}
 
-float lovrWorldGetTightness(World* world) {}
+float lovrWorldGetTightness(World* world) {
+  lovrLog(LOG_WARN, "PHY", "Jolt doesn't support Tightness option");
+}
 
-void lovrWorldSetTightness(World* world, float tightness) {}
+void lovrWorldSetTightness(World* world, float tightness) {
+  lovrLog(LOG_WARN, "PHY", "Jolt doesn't support Tightness option");
+}
 
-void lovrWorldGetLinearDamping(World* world, float* damping, float* threshold) {}
+void lovrWorldGetLinearDamping(World* world, float* damping, float* threshold) {
+  lovrLog(LOG_WARN, "PHY", "Jolt doesn't support global LinearDamping option");
+}
 
-void lovrWorldSetLinearDamping(World* world, float damping, float threshold) {}
+void lovrWorldSetLinearDamping(World* world, float damping, float threshold) {
+  lovrLog(LOG_WARN, "PHY", "Jolt doesn't support global LinearDamping option");
+}
 
-void lovrWorldGetAngularDamping(World* world, float* damping, float* threshold) {}
+void lovrWorldGetAngularDamping(World* world, float* damping, float* threshold) {
+  lovrLog(LOG_WARN, "PHY", "Jolt doesn't support global AngularDamping option");
+}
 
-void lovrWorldSetAngularDamping(World* world, float damping, float threshold) {}
+void lovrWorldSetAngularDamping(World* world, float damping, float threshold) {
+  lovrLog(LOG_WARN, "PHY", "Jolt doesn't support global AngularDamping option");
+}
 
-bool lovrWorldIsSleepingAllowed(World* world) {}
+bool lovrWorldIsSleepingAllowed(World* world) {
+  lovrLog(LOG_WARN, "PHY", "Jolt doesn't support global SleepingAllowed option");
+}
 
-void lovrWorldSetSleepingAllowed(World* world, bool allowed) {}
+void lovrWorldSetSleepingAllowed(World* world, bool allowed) {
+  lovrLog(LOG_WARN, "PHY", "Jolt doesn't support global SleepingAllowed option");
+}
 
 const char* lovrWorldGetTagName(World* world, uint32_t tag) {}
 
@@ -601,12 +621,12 @@ bool lovrShapeIsEnabled(Shape* shape) {}
 void lovrShapeSetEnabled(Shape* shape, bool enabled) {}
 
 bool lovrShapeIsSensor(Shape* shape) {
-  //todo: API is misleading, sensor property applies to body and not shape
+  lovrLog(LOG_WARN, "PHY", "Jolt sensor property fetched from collider, not shape");
   return JPH_Body_IsSensor(shape->collider->body);
 }
 
 void lovrShapeSetSensor(Shape* shape, bool sensor) {
-  //todo: API is misleading, sensor property applies to body and not shape
+  lovrLog(LOG_WARN, "PHY", "Jolt sensor property is applied to collider, not shape");
   JPH_Body_SetIsSensor(shape->collider->body, sensor);
 }
 
@@ -619,12 +639,15 @@ void lovrShapeSetUserData(Shape* shape, void* data) {
 }
 
 void lovrShapeGetPosition(Shape* shape, float* x, float* y, float* z) {
+  // todo: composite shapes
   *x = 0.f;
   *y = 0.f;
   *z = 0.f;
 }
 
-void lovrShapeSetPosition(Shape* shape, float x, float y, float z) {}
+void lovrShapeSetPosition(Shape* shape, float x, float y, float z) {
+  // todo: composite shapes
+}
 
 void lovrShapeGetOrientation(Shape* shape, float* orientation) {
   // todo: composite shapes
@@ -634,7 +657,9 @@ void lovrShapeGetOrientation(Shape* shape, float* orientation) {
   orientation[3] = 1.f;
 }
 
-void lovrShapeSetOrientation(Shape* shape, float* orientation) {}
+void lovrShapeSetOrientation(Shape* shape, float* orientation) {
+  // todo: composite shapes
+}
 
 void lovrShapeGetMass(Shape* shape, float density, float* cx, float* cy, float* cz, float* mass, float inertia[6]) {}
 
@@ -684,8 +709,10 @@ void lovrBoxShapeGetDimensions(BoxShape* box, float* w, float* h, float* d) {
   *d = halfExtent.z * 2.f;
 }
 
-
-void lovrBoxShapeSetDimensions(BoxShape* box, float w, float h, float d) {}
+void lovrBoxShapeSetDimensions(BoxShape* box, float w, float h, float d) {
+  lovrLog(LOG_WARN, "PHY", "Jolt BoxShape dimensions are read-only");
+  // todo: no setter available, but the shape could be removed and re-added
+}
 
 CapsuleShape* lovrCapsuleShapeCreate(float radius, float length) {
   lovrCheck(radius > 0.f && length > 0.f, "CapsuleShape dimensions must be positive");
@@ -701,13 +728,19 @@ float lovrCapsuleShapeGetRadius(CapsuleShape* capsule) {
   return JPH_CapsuleShape_GetRadius((JPH_CapsuleShape *) capsule->shape);
 }
 
-void lovrCapsuleShapeSetRadius(CapsuleShape* capsule, float radius) {}
+void lovrCapsuleShapeSetRadius(CapsuleShape* capsule, float radius) {
+  lovrLog(LOG_WARN, "PHY", "Jolt CapsuleShape radius is read-only");
+  // todo: no setter available, but the shape could be removed and re-added
+}
 
 float lovrCapsuleShapeGetLength(CapsuleShape* capsule) {
   return 2.f * JPH_CapsuleShape_GetHalfHeightOfCylinder((JPH_CapsuleShape *) capsule->shape);
 }
 
-void lovrCapsuleShapeSetLength(CapsuleShape* capsule, float length) {}
+void lovrCapsuleShapeSetLength(CapsuleShape* capsule, float length) {
+  lovrLog(LOG_WARN, "PHY", "Jolt CapsuleShape length is read-only");
+  // todo: no setter available, but the shape could be removed and re-added
+}
 
 CylinderShape* lovrCylinderShapeCreate(float radius, float length) {
   lovrCheck(radius > 0.f && length > 0.f, "CylinderShape dimensions must be positive");
@@ -723,13 +756,19 @@ float lovrCylinderShapeGetRadius(CylinderShape* Cylinder) {
   return JPH_CylinderShape_GetRadius((JPH_CylinderShape *) Cylinder->shape);
 }
 
-void lovrCylinderShapeSetRadius(CylinderShape* Cylinder, float radius) {}
+void lovrCylinderShapeSetRadius(CylinderShape* Cylinder, float radius) {
+  lovrLog(LOG_WARN, "PHY", "Jolt CylinderShape radius is read-only");
+  // todo: no setter available, but the shape could be removed and re-added
+}
 
 float lovrCylinderShapeGetLength(CylinderShape* Cylinder) {
   return JPH_CylinderShape_GetHalfHeight((JPH_CylinderShape *) Cylinder->shape) * 2.f;
 }
 
-void lovrCylinderShapeSetLength(CylinderShape* cylinder, float length) {}
+void lovrCylinderShapeSetLength(CylinderShape* cylinder, float length) {
+  lovrLog(LOG_WARN, "PHY", "Jolt CylinderShape length is read-only");
+  // todo: no setter available, but the shape could be removed and re-added
+}
 
 MeshShape* lovrMeshShapeCreate(int vertexCount, float vertices[], int indexCount, uint32_t indices[]) {
   MeshShape* mesh = calloc(1, sizeof(MeshShape));
