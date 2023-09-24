@@ -772,7 +772,6 @@ JPH_MeshShape* JPH_MeshShapeSettings_CreateShape(JPH_MeshShapeSettings* settings
 {
     JPH::MeshShapeSettings* jolt_settings = reinterpret_cast<JPH::MeshShapeSettings*>(settings);
     auto shape_res = reinterpret_cast<JPH::MeshShapeSettings*>(settings)->Create();
-    printf("valid: %d\n", shape_res.IsValid());
     return reinterpret_cast<JPH_MeshShape*>(shape_res.Get().GetPtr());
 }
 
@@ -909,6 +908,7 @@ JPH_BodyCreationSettings* JPH_BodyCreationSettings_Create3(
     );
     return reinterpret_cast<JPH_BodyCreationSettings*>(bodyCreationSettings);
 }
+
 void JPH_BodyCreationSettings_Destroy(JPH_BodyCreationSettings* settings)
 {
     if (settings)
@@ -1032,6 +1032,15 @@ JPH_SpringSettings* JPH_SpringSettings_Create(float frequency, float damping)
     auto settings = new JPH::SpringSettings(ESpringMode::FrequencyAndDamping, frequency, damping);
     return reinterpret_cast<JPH_SpringSettings*>(settings);
 }
+
+void JPH_SpringSettings_Destroy(JPH_SpringSettings* settings)
+{
+    if (settings)
+    {
+        delete reinterpret_cast<JPH::SpringSettings*>(settings);
+    }
+}
+
 
 float JPH_SpringSettings_GetFrequency(JPH_SpringSettings* settings)
 {

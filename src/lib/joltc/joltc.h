@@ -397,6 +397,7 @@ JPH_CAPI JPH_SoftBodyCreationSettings* JPH_SoftBodyCreationSettings_Create();
 
 /* JPH_SpringSettings */
 JPH_CAPI JPH_SpringSettings* JPH_SpringSettings_Create(float frequency, float damping);
+JPH_CAPI void JPH_SpringSettings_Destroy(JPH_SpringSettings* settings);
 JPH_CAPI float JPH_SpringSettings_GetFrequency(JPH_SpringSettings* settings);
 
 /* JPH_ConstraintSettings */
