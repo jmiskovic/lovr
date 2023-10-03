@@ -772,7 +772,8 @@ JPH_MeshShape* JPH_MeshShapeSettings_CreateShape(JPH_MeshShapeSettings* settings
 {
     JPH::MeshShapeSettings* jolt_settings = reinterpret_cast<JPH::MeshShapeSettings*>(settings);
     auto shape_res = reinterpret_cast<JPH::MeshShapeSettings*>(settings)->Create();
-    return reinterpret_cast<JPH_MeshShape*>(shape_res.Get().GetPtr());
+    static auto res = shape_res.Get();
+    return reinterpret_cast<JPH_MeshShape*>(res.GetPtr());
 }
 
 
@@ -802,6 +803,15 @@ uint32_t JPH_MeshShapeSettings_CalculateBitsPerSampleForError(const JPH_HeightFi
 
     return reinterpret_cast<const JPH::HeightFieldShapeSettings*>(settings)->CalculateBitsPerSampleForError(maxError);
 }
+
+JPH_HeightFieldShape* JPH_HeightFieldShapeSettings_CreateShape(JPH_HeightFieldShapeSettings* settings)
+{
+    JPH::HeightFieldShapeSettings* jolt_settings = reinterpret_cast<JPH::HeightFieldShapeSettings*>(settings);
+    auto shape_res = reinterpret_cast<JPH::HeightFieldShapeSettings*>(settings)->Create();
+    static auto res = shape_res.Get();
+    return reinterpret_cast<JPH_HeightFieldShape*>(res.GetPtr());
+}
+
 
 /* TaperedCapsuleShapeSettings */
 JPH_TaperedCapsuleShapeSettings* JPH_TaperedCapsuleShapeSettings_Create(float halfHeightOfTaperedCylinder, float topRadius, float bottomRadius)

@@ -182,7 +182,7 @@ World* lovrWorldCreate(float xg, float yg, float zg, bool allowSleep, const char
     world->broad_phase_layer_interface,
     world->broad_phase_layer_filter,
     world->object_layer_pair_filter);
-
+  lovrWorldSetGravity(world, xg, yg, zg);
   return world;
 }
 
@@ -397,7 +397,12 @@ void lovrColliderAddShape(Collider* collider, Shape* shape) {
   lovrRetain(shape);
   shape->collider = collider;
   arr_push(&collider->shapes, shape);
-  JPH_BodyInterface_SetShape(collider->world->body_interface, collider->id, shape->shape, true, JPH_Activation_Activate);
+  bool isMeshOrTerrain = (shape->type == SHAPE_TERRAIN) || (shape->type == SHAPE_MESH);
+  bool shouldUpdateMass = !isMeshOrTerrain;
+  if (isMeshOrTerrain) {
+    lovrColliderSetKinematic(shape->collider, true);
+  }
+  JPH_BodyInterface_SetShape(collider->world->body_interface, collider->id, shape->shape, shouldUpdateMass, JPH_Activation_Activate);
 }
 
 void lovrColliderRemoveShape(Collider* collider, Shape* shape) {
@@ -453,17 +458,28 @@ bool lovrColliderIsKinematic(Collider* collider) {
 }
 
 void lovrColliderSetKinematic(Collider* collider, bool kinematic) {
-  JPH_BodyInterface_SetMotionType(
-    collider->world->body_interface,
-    collider->id,
-    kinematic ? JPH_MotionType_Kinematic : JPH_MotionType_Dynamic,
-    JPH_Activation_Activate);
+  if (kinematic) {
+    JPH_BodyInterface_DeactivateBody(collider->world->body_interface, collider->id);
+    JPH_BodyInterface_SetObjectLayer(
+      collider->world->body_interface, collider->id,
+      OBJ_LAYER_NON_MOVING);
+    JPH_BodyInterface_SetMotionType(
+      collider->world->body_interface,
+      collider->id,
+      JPH_MotionType_Static,
+      JPH_Activation_DontActivate);
+  } else {
+    JPH_BodyInterface_SetMotionType(
+      collider->world->body_interface,
+      collider->id,
+      JPH_MotionType_Dynamic,
+      JPH_Activation_Activate);
+  }
 }
 
 bool lovrColliderIsGravityIgnored(Collider* collider) {
   return JPH_BodyInterface_GetGravityFactor(collider->world->body_interface, collider->id) == 0.f;
 }
-
 
 void lovrColliderSetGravityIgnored(Collider* collider, bool ignored) {
   JPH_BodyInterface_SetGravityFactor(
@@ -874,7 +890,29 @@ MeshShape* lovrMeshShapeCreate(int vertexCount, float vertices[], int indexCount
   return mesh;
 }
 
-TerrainShape* lovrTerrainShapeCreate(float* vertices, uint32_t widthSamples, uint32_t depthSamples, float horizontalScale, float verticalScale) {}
+TerrainShape* lovrTerrainShapeCreate(float* vertices, uint32_t widthSamples, uint32_t depthSamples, float horizontalScale, float verticalScale) {
+  lovrAssert(widthSamples == depthSamples, "Jolt needs terrain width and depth to be the same");
+  TerrainShape* terrain = calloc(1, sizeof(TerrainShape));
+  lovrAssert(terrain, "Out of memory");
+  terrain->ref = 1;
+  terrain->type = SHAPE_TERRAIN;
+  const JPH_Vec3 offset = {
+    .x = -0.5f * horizontalScale,
+    .y = 0.f,
+    .z = -0.5f * horizontalScale
+  };
+  const JPH_Vec3 scale = {
+    .x = horizontalScale / widthSamples,
+    .y = verticalScale,
+    .z = horizontalScale / depthSamples
+  };
+
+  JPH_HeightFieldShapeSettings * shape_settings = JPH_HeightFieldShapeSettings_Create(
+    vertices, &offset, &scale, widthSamples);
+  terrain->shape = (JPH_Shape *) JPH_HeightFieldShapeSettings_CreateShape(shape_settings);
+  JPH_ShapeSettings_Destroy((JPH_ShapeSettings *) shape_settings);
+  return terrain;
+}
 
 void lovrJointGetAnchors(Joint* joint, float anchor1[3], float anchor2[3]) {
   JPH_Body * body1 = JPH_TwoBodyConstraint_GetBody1((JPH_TwoBodyConstraint *) joint->constraint);
