@@ -6,6 +6,7 @@
 
 static JPH_TempAllocator *temp_allocator;
 static JPH_JobSystem *job_system;
+static bool initialized = false;
 
 struct World {
   uint32_t ref;
@@ -16,13 +17,13 @@ struct World {
   JPH_BroadPhaseLayerInterface* broad_phase_layer_interface;
   JPH_ObjectVsBroadPhaseLayerFilter* broad_phase_layer_filter;
   JPH_ObjectLayerPairFilter* object_layer_pair_filter;
+  char* tags[MAX_TAGS];
+  uint16_t masks[MAX_TAGS];
 /*
   dWorldID id;
   dSpaceID space;
   dJointGroupID contactGroup;
   arr_t(Shape*) overlaps;
-  char* tags[MAX_TAGS];
-  uint16_t masks[MAX_TAGS];
 */
 };
 
@@ -36,9 +37,7 @@ struct Collider {
   arr_t(Shape*) shapes;
   arr_t(Joint*) joints;
   void* userdata;
-/*
   uint32_t tag;
-*/
 };
 
 struct Shape {
@@ -56,6 +55,62 @@ struct Joint {
   void* userdata;
 };
 
+// Broad phase layers
+#define NUM_BP_LAYERS 2
+#define BP_LAYER_KINEMATIC 0
+#define BP_LAYER_DYNAMIC 1
+
+// UNTAGGED = 16 is mapped to object layers: 32 is kinematic untagged, and 33 is dynamic untagged
+// (NO_TAG = ~0u is not used in jolt implementation)
+#define UNTAGGED (MAX_TAGS)
+
+const char* broadphase_name_from_object[NUM_BP_LAYERS] = {
+  "kinematic",
+  "dynamic"
+};
+
+static uint32_t
+BPLayerInterface_GetNumBroadPhaseLayers(const JPH_BroadPhaseLayerInterface* interface) {
+  return 2;
+}
+
+// each tag corresponds to two object layers, the kinematic variant and dynamic variant
+static JPH_BroadPhaseLayer
+BPLayerInterface_GetBroadPhaseLayer(const JPH_BroadPhaseLayerInterface* self, JPH_ObjectLayer layer) {
+  return layer % 2;
+}
+
+static const char*
+BPLayerInterface_GetBroadPhaseLayerName(const JPH_BroadPhaseLayerInterface* self, JPH_BroadPhaseLayer layer) {
+  return broadphase_name_from_object[layer];
+}
+
+static JPH_Bool32
+BroadPhaseLayerFilter_ShouldCollide(const JPH_ObjectVsBroadPhaseLayerFilter* filter, JPH_ObjectLayer layer1, JPH_BroadPhaseLayer bp_layer2) {
+  if (layer1 % 2 == 0) {
+    return bp_layer2 == BP_LAYER_DYNAMIC;
+  } else {
+    return true;
+  }
+}
+
+static World* global_world; // todo: better access to world masks in narrowphase filter; this supports only one world
+
+static JPH_Bool32
+ObjectLayerPairFilter_ShouldCollide(const JPH_ObjectLayerPairFilter* filter, JPH_ObjectLayer object1, JPH_ObjectLayer object2) {
+  if ((object1 % 2 == 0) && (object2 % 2 == 0)) {
+    // todo: check that this is filtered out already during broadphase
+    return false;
+  }
+  unsigned tag1 = object1 >> 1;
+  unsigned tag2 = object2 >> 1;
+  return
+    tag1 == UNTAGGED ||
+    tag2 == UNTAGGED ||
+    ((global_world->masks[tag1] & (1 << tag2)) &&
+     (global_world->masks[tag2] & (1 << tag1)));
+}
+
 static void matrix_struct_to_array(const JPH_Matrix4x4* matrix, float arr[16]) {
     arr[0] = matrix->m11; arr[1] = matrix->m12; arr[2] = matrix->m13; arr[3] = matrix->m14;
     arr[4] = matrix->m21; arr[5] = matrix->m22; arr[6] = matrix->m23; arr[7] = matrix->m24;
@@ -63,7 +118,15 @@ static void matrix_struct_to_array(const JPH_Matrix4x4* matrix, float arr[16]) {
     arr[12] = matrix->m41; arr[13] = matrix->m42; arr[14] = matrix->m43; arr[15] = matrix->m44;
 }
 
-static bool initialized = false;
+// XXX slow, but probably fine (tag names are not on any critical path), could switch to hashing if needed
+static uint32_t findTag(World* world, const char* name) {
+  for (uint32_t i = 0; i < MAX_TAGS && world->tags[i]; i++) {
+    if (!strcmp(world->tags[i], name)) {
+      return i;
+    }
+  }
+  return UNTAGGED;
+}
 
 bool lovrPhysicsInit(void) {
   if (initialized) return false;
@@ -81,69 +144,10 @@ void lovrPhysicsDestroy(void) {
   initialized = false;
 }
 
-// Object layers
-#define NUM_OBJ_LAYERS 2
-#define OBJ_LAYER_NON_MOVING 0
-#define OBJ_LAYER_MOVING 1
-
-// Broad phase layers
-#define NUM_BP_LAYERS 2
-#define BP_LAYER_NON_MOVING 0
-#define BP_LAYER_MOVING 1
-
-JPH_BroadPhaseLayer broadphase_from_object[NUM_OBJ_LAYERS];
-const char* broadphase_name_from_object[NUM_OBJ_LAYERS] = {
-  "non-moving",
-  "moving"
-};
-
-static uint32_t
-BPLayerInterface_GetNumBroadPhaseLayers(const JPH_BroadPhaseLayerInterface* interface) {
-    return NUM_BP_LAYERS;
-}
-
-static JPH_BroadPhaseLayer
-BPLayerInterface_GetBroadPhaseLayer(const JPH_BroadPhaseLayerInterface* self, JPH_ObjectLayer layer) {
-  lovrAssert(layer < NUM_BP_LAYERS, "Broad-phase layer out of range");
-  return broadphase_from_object[layer];
-}
-
-static const char*
-BPLayerInterface_GetBroadPhaseLayerName(const JPH_BroadPhaseLayerInterface* self, JPH_BroadPhaseLayer layer) {
-  return broadphase_name_from_object[layer];
-}
-
-
-static JPH_Bool32
-BroadPhaseLayerFilter_ShouldCollide(const JPH_ObjectVsBroadPhaseLayerFilter* filter, JPH_ObjectLayer layer1, JPH_BroadPhaseLayer bp_layer2) {
-  // return true if one of them is moving
-  switch (layer1) {
-    case OBJ_LAYER_NON_MOVING:
-      return bp_layer2 == BP_LAYER_MOVING;
-    case OBJ_LAYER_MOVING:
-      return true;
-    default:
-      lovrAssert(false, "Broad-phase collision check between unknown layers");
-  }
-  return true;
-}
-
-static JPH_Bool32
-ObjectLayerPairFilter_ShouldCollide(const JPH_ObjectLayerPairFilter* filter, JPH_ObjectLayer object1, JPH_ObjectLayer object2) {
-  return true;
-  switch (object1) {
-    case OBJ_LAYER_NON_MOVING:
-      return object2 == OBJ_LAYER_MOVING;
-    case OBJ_LAYER_MOVING:
-      return true;
-    default:
-        lovrAssert(false, "Collision check between unknown object layers");
-        return false;
-  }
-}
 
 World* lovrWorldCreate(float xg, float yg, float zg, bool allowSleep, const char** tags, uint32_t tagCount) {
   World* world = calloc(1, sizeof(World));
+  global_world = world;
   lovrAssert(world, "Out of memory");
   world->physics_system = JPH_PhysicsSystem_Create();
   world->body_interface = JPH_PhysicsSystem_GetBodyInterface(world->physics_system);
@@ -153,26 +157,20 @@ World* lovrWorldCreate(float xg, float yg, float zg, bool allowSleep, const char
   const uint32_t num_body_mutexes = 0; // zero is auto-detect
   const uint32_t max_body_pairs = 1024 * 2;
   const uint32_t max_contact_constraints = 1024 * 2;
-
-  // todo: collision tags
-
   world->broad_phase_layer_interface = JPH_BroadPhaseLayerInterface_Create();
   JPH_BroadPhaseLayerInterface_SetProcs((JPH_BroadPhaseLayerInterface_Procs){
     .GetNumBroadPhaseLayers = BPLayerInterface_GetNumBroadPhaseLayers,
     .GetBroadPhaseLayer = BPLayerInterface_GetBroadPhaseLayer,
     .GetBroadPhaseLayerName = BPLayerInterface_GetBroadPhaseLayerName
   });
-
   world->broad_phase_layer_filter = JPH_ObjectVsBroadPhaseLayerFilter_Create();
   JPH_ObjectVsBroadPhaseLayerFilter_SetProcs((JPH_ObjectVsBroadPhaseLayerFilter_Procs) {
     .ShouldCollide = BroadPhaseLayerFilter_ShouldCollide
   });
-
   world->object_layer_pair_filter = JPH_ObjectLayerPairFilter_Create();
   JPH_ObjectLayerPairFilter_SetProcs((JPH_ObjectLayerPairFilter_Procs) {
     .ShouldCollide = ObjectLayerPairFilter_ShouldCollide
   });
-
   JPH_PhysicsSystem_Init(
     world->physics_system,
     max_bodies,
@@ -183,13 +181,25 @@ World* lovrWorldCreate(float xg, float yg, float zg, bool allowSleep, const char
     world->broad_phase_layer_filter,
     world->object_layer_pair_filter);
   lovrWorldSetGravity(world, xg, yg, zg);
+  for (uint32_t i = 0; i < tagCount; i++) {
+    size_t size = strlen(tags[i]) + 1;
+    world->tags[i] = malloc(size);
+    memcpy(world->tags[i], tags[i], size);
+  }
+  memset(world->masks, 0xff, sizeof(world->masks));
   return world;
 }
 
 void lovrWorldDestroy(void* ref) {
   World* world = ref;
   lovrWorldDestroyData(world);
-  // todo: free up allocated tags and overlaps/contacts (once their allocation is implemented)
+  // todo: free up overlaps/contacts (once their allocation is implemented)
+  for (uint32_t i = 0; i < MAX_TAGS - 1 && world->tags[i]; i++) {
+    free(world->tags[i]);
+  }
+  if (world->tags[15]) {
+    free(world->tags[15]);
+  }
   free(world);
 }
 
@@ -299,13 +309,46 @@ void lovrWorldSetSleepingAllowed(World* world, bool allowed) {
   lovrLog(LOG_WARN, "PHY", "Jolt doesn't support global SleepingAllowed option");
 }
 
-const char* lovrWorldGetTagName(World* world, uint32_t tag) {}
+const char* lovrWorldGetTagName(World* world, uint32_t tag) {
+  return (tag == UNTAGGED) ? NULL : world->tags[tag];
+}
 
-void lovrWorldDisableCollisionBetween(World* world, const char* tag1, const char* tag2) {}
+void lovrWorldDisableCollisionBetween(World* world, const char* tag1, const char* tag2) {
+  uint32_t i = findTag(world, tag1);
+  uint32_t j = findTag(world, tag2);
 
-void lovrWorldEnableCollisionBetween(World* world, const char* tag1, const char* tag2) {}
+  if (i == UNTAGGED || j == UNTAGGED) {
+    return;
+  }
 
-bool lovrWorldIsCollisionEnabledBetween(World* world, const char* tag1, const char* tag2) {}
+  world->masks[i] &= ~(1 << j);
+  world->masks[j] &= ~(1 << i);
+  return;
+}
+
+void lovrWorldEnableCollisionBetween(World* world, const char* tag1, const char* tag2) {
+  uint32_t i = findTag(world, tag1);
+  uint32_t j = findTag(world, tag2);
+
+  if (i == UNTAGGED || j == UNTAGGED) {
+    return;
+  }
+
+  world->masks[i] |= (1 << j);
+  world->masks[j] |= (1 << i);
+  return;
+}
+
+bool lovrWorldIsCollisionEnabledBetween(World* world, const char* tag1, const char* tag2) {
+  uint32_t i = findTag(world, tag1);
+  uint32_t j = findTag(world, tag2);
+
+  if (i == UNTAGGED || j == UNTAGGED) {
+    return true;
+  }
+
+  return (world->masks[i] & (1 << j)) && (world->masks[j] & (1 << i));
+}
 
 Collider* lovrColliderCreate(World* world, float x, float y, float z) {
   // todo: crashes when too many are added
@@ -313,13 +356,16 @@ Collider* lovrColliderCreate(World* world, float x, float y, float z) {
   lovrAssert(collider, "Out of memory");
   collider->ref = 1;
   collider->world = world;
+  collider->tag = UNTAGGED;
+  JPH_MotionType motionType = JPH_MotionType_Dynamic;
+  JPH_ObjectLayer objectLayer = UNTAGGED * 2 + 1;
+
   const JPH_RVec3 position = { .x = x, .y = y, .z = z };
   const JPH_Quat rotation = { .x = 0.f, .y = 0.f, .z = 0.f, .w = 1.f };
-
   // todo: a temp shape is created, to be replaced in lovrColliderAddShape
   JPH_Shape* shape = (JPH_Shape *) JPH_SphereShape_Create(1);
   JPH_BodyCreationSettings* settings = JPH_BodyCreationSettings_Create3(
-    shape, &position, &rotation, JPH_MotionType_Dynamic, OBJ_LAYER_MOVING);
+    shape, &position, &rotation, motionType, objectLayer);
   collider->body = JPH_BodyInterface_CreateBody(world->body_interface, settings);
   JPH_BodyCreationSettings_Destroy(settings);
   collider->id = JPH_Body_GetID(collider->body);
@@ -431,9 +477,24 @@ void lovrColliderSetUserData(Collider* collider, void* data) {
   collider->userdata = data;
 }
 
-const char* lovrColliderGetTag(Collider* collider) {}
+const char* lovrColliderGetTag(Collider* collider) {
+  return lovrWorldGetTagName(collider->world, collider->tag);
+}
 
-bool lovrColliderSetTag(Collider* collider, const char* tag) {}
+bool lovrColliderSetTag(Collider* collider, const char* tag) {
+  if (!tag) {
+    collider->tag = UNTAGGED;
+  } else {
+    collider->tag = findTag(collider->world, tag);
+    if (collider->tag == UNTAGGED) {
+      return false;
+    }
+  }
+  bool kinematic = lovrColliderIsKinematic(collider);
+  JPH_ObjectLayer objectLayer = collider->tag * 2 + (kinematic ? 0 : 1);
+  JPH_BodyInterface_SetObjectLayer(collider->world->body_interface, collider->id, objectLayer);
+  return true;
+}
 
 float lovrColliderGetFriction(Collider* collider) {
   return JPH_BodyInterface_GetFriction(collider->world->body_interface, collider->id);
@@ -452,21 +513,19 @@ void lovrColliderSetRestitution(Collider* collider, float restitution) {
 }
 
 bool lovrColliderIsKinematic(Collider* collider) {
-  JPH_MotionType type = JPH_BodyInterface_GetMotionType(collider->world->body_interface, collider->id);
-  // todo: what about JPH_MotionType_Static?
-  return type == JPH_MotionType_Kinematic;
+  JPH_ObjectLayer objectLayer = JPH_BodyInterface_GetObjectLayer(collider->world->body_interface, collider->id);
+  return objectLayer % 2 == 0;
 }
 
 void lovrColliderSetKinematic(Collider* collider, bool kinematic) {
+  JPH_ObjectLayer objectLayer = collider->tag * 2 + (kinematic ? 0 : 1);
+  JPH_BodyInterface_SetObjectLayer(collider->world->body_interface, collider->id, objectLayer);
   if (kinematic) {
     JPH_BodyInterface_DeactivateBody(collider->world->body_interface, collider->id);
-    JPH_BodyInterface_SetObjectLayer(
-      collider->world->body_interface, collider->id,
-      OBJ_LAYER_NON_MOVING);
     JPH_BodyInterface_SetMotionType(
       collider->world->body_interface,
       collider->id,
-      JPH_MotionType_Static,
+      JPH_MotionType_Kinematic,
       JPH_Activation_DontActivate);
   } else {
     JPH_BodyInterface_SetMotionType(
