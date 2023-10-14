@@ -1196,7 +1196,7 @@ void JPH_HingeConstraintSettings_GetNormalAxis2(JPH_HingeConstraintSettings* set
     FromRVec3(joltSettings->mNormalAxis2, result);
 }
 
-JPH_DistanceConstraint * JPH_HingeConstraintSettings_CreateConstraint(JPH_HingeConstraintSettings* settings, JPH_Body* body1, JPH_Body* body2)
+JPH_DistanceConstraint* JPH_HingeConstraintSettings_CreateConstraint(JPH_HingeConstraintSettings* settings, JPH_Body* body1, JPH_Body* body2)
 {
     auto joltBody1 = reinterpret_cast<JPH::Body*>(body1);
     auto joltBody2 = reinterpret_cast<JPH::Body*>(body2);
@@ -1204,7 +1204,7 @@ JPH_DistanceConstraint * JPH_HingeConstraintSettings_CreateConstraint(JPH_HingeC
     return reinterpret_cast<JPH_DistanceConstraint*>(static_cast<JPH::HingeConstraint*>(constraint));
 }
 
-JPH_HingeConstraintSettings * JPH_HingeConstraint_GetSettings(JPH_HingeConstraint* constraint)
+JPH_HingeConstraintSettings* JPH_HingeConstraint_GetSettings(JPH_HingeConstraint* constraint)
 {
     auto joltConstraint = reinterpret_cast<JPH::HingeConstraint*>(constraint);
     auto joltSettings = joltConstraint->GetConstraintSettings().GetPtr();
@@ -1261,6 +1261,12 @@ void JPH_SliderConstraintSettings_SetSliderAxis(JPH_SliderConstraintSettings* se
     joltSettings->SetSliderAxis(ToRVec3(axis));
 }
 
+void JPH_SliderConstraintSettings_GetSliderAxis1(JPH_SliderConstraintSettings* settings, JPH_RVec3* result) {
+    JPH_ASSERT(settings);
+    auto joltSettings = reinterpret_cast<JPH::SliderConstraintSettings*>(settings);
+    FromRVec3(joltSettings->mSliderAxis1, result);
+}
+
 float JPH_SliderConstraint_GetCurrentPosition(JPH_SliderConstraint* constraint)
 {
     return reinterpret_cast<JPH::SliderConstraint*>(constraint)->GetCurrentPosition();
@@ -1292,6 +1298,13 @@ JPH_SliderConstraint * JPH_SliderConstraintSettings_CreateConstraint(JPH_SliderC
     auto joltBody2 = reinterpret_cast<JPH::Body*>(body2);
     JPH::TwoBodyConstraint* constraint = reinterpret_cast<JPH::SliderConstraintSettings*>(settings)->Create(*joltBody1, *joltBody2);
     return reinterpret_cast<JPH_SliderConstraint*>(static_cast<JPH::SliderConstraint*>(constraint));
+}
+
+JPH_SliderConstraintSettings* JPH_SliderConstraint_GetSettings(JPH_SliderConstraint* constraint)
+{
+    auto joltConstraint = reinterpret_cast<JPH::SliderConstraint*>(constraint);
+    auto joltSettings = joltConstraint->GetConstraintSettings().GetPtr();
+    return reinterpret_cast<JPH_SliderConstraintSettings*>(joltSettings);
 }
 
 void JPH_DistanceConstraint_SetDistance(JPH_DistanceConstraint* constraint, float minDistance, float maxDistance)

@@ -1255,10 +1255,23 @@ void lovrHingeJointGetAxis(HingeJoint* joint, float axis[3]) {
   JPH_RVec3 resultAxis;
   JPH_HingeConstraintSettings * settings = JPH_HingeConstraint_GetSettings((JPH_HingeConstraint *) joint->constraint);
   JPH_HingeConstraintSettings_GetHingeAxis1(settings, &resultAxis);
-  // todo: convert to world coordinates
-  axis[0] = resultAxis.x;
-  axis[1] = resultAxis.y;
-  axis[2] = resultAxis.z;
+  JPH_Body * body1 = JPH_TwoBodyConstraint_GetBody1((JPH_TwoBodyConstraint *) joint->constraint);
+  JPH_Matrix4x4 centerOfMassTransformStruct;
+  JPH_Body_GetCenterOfMassTransform(body1, &centerOfMassTransformStruct);
+  JPH_Matrix4x4 constraintToBody;
+  JPH_TwoBodyConstraint_GetConstraintToBody1Matrix((JPH_TwoBodyConstraint *) joint->constraint, &constraintToBody);
+  float translation[4] = {
+    resultAxis.x,
+    resultAxis.y,
+    resultAxis.z,
+    0.f
+  };
+  float centerOfMassTransformArray[16];
+  matrix_struct_to_array(&centerOfMassTransformStruct, centerOfMassTransformArray);
+  mat4_mulVec4((mat4) &centerOfMassTransformArray, translation);
+  axis[0] = translation[0];
+  axis[1] = translation[1];
+  axis[2] = translation[2];
 }
 
 void lovrHingeJointSetAxis(HingeJoint* joint, float axis[3]) {
@@ -1313,9 +1326,33 @@ SliderJoint* lovrSliderJointCreate(Collider* a, Collider* b, float axis[3]) {
   return joint;
 }
 
-void lovrSliderJointGetAxis(SliderJoint* joint, float axis[3]) {}
+void lovrSliderJointGetAxis(SliderJoint* joint, float axis[3]) {
+  JPH_RVec3 resultAxis;
+  JPH_SliderConstraintSettings * settings = JPH_SliderConstraint_GetSettings((JPH_SliderConstraint *) joint->constraint);
+  JPH_SliderConstraintSettings_GetSliderAxis1(settings, &resultAxis);
+  JPH_Body * body1 = JPH_TwoBodyConstraint_GetBody1((JPH_TwoBodyConstraint *) joint->constraint);
+  JPH_Matrix4x4 centerOfMassTransformStruct;
+  JPH_Body_GetCenterOfMassTransform(body1, &centerOfMassTransformStruct);
+  JPH_Matrix4x4 constraintToBody;
+  JPH_TwoBodyConstraint_GetConstraintToBody1Matrix((JPH_TwoBodyConstraint *) joint->constraint, &constraintToBody);
+  float translation[4] = {
+    resultAxis.x,
+    resultAxis.y,
+    resultAxis.z,
+    0.f
+  };
+  float centerOfMassTransformArray[16];
+  matrix_struct_to_array(&centerOfMassTransformStruct, centerOfMassTransformArray);
+  mat4_mulVec4((mat4) &centerOfMassTransformArray, translation);
+  axis[0] = translation[0];
+  axis[1] = translation[1];
+  axis[2] = translation[2];
+}
 
-void lovrSliderJointSetAxis(SliderJoint* joint, float axis[3]) {}
+void lovrSliderJointSetAxis(SliderJoint* joint, float axis[3]) {
+  lovrLog(LOG_WARN, "PHY", "Jolt does not support modifying joint axis after creation");
+  // todo: no setter available, but the constraint could be removed and re-added
+}
 
 float lovrSliderJointGetPosition(SliderJoint* joint) {
   return JPH_SliderConstraint_GetCurrentPosition((JPH_SliderConstraint *) joint->constraint);
