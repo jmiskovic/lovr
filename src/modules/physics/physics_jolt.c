@@ -727,19 +727,81 @@ void lovrColliderApplyTorque(Collider* collider, float x, float y, float z) {
   JPH_BodyInterface_AddTorque(collider->world->body_interface, collider->id, &torque);
 }
 
-void lovrColliderGetLocalCenter(Collider* collider, float* x, float* y, float* z) {}
+void lovrColliderGetLocalCenter(Collider* collider, float* x, float* y, float* z) {
+  // todo: applicable for CompoundShape and OffsetCenterOfMassShape
+  *x = 0.f;
+  *y = 0.f;
+  *z = 0.f;
+}
 
-void lovrColliderGetLocalPoint(Collider* collider, float wx, float wy, float wz, float* x, float* y, float* z) {}
+void lovrColliderGetLocalPoint(Collider* collider, float wx, float wy, float wz, float* x, float* y, float* z) {
+  float position[4] = { wx, wy, wz, 1.f };
+  JPH_Matrix4x4 transformStruct;
+  float transformArray[16];
+  JPH_Body_GetWorldTransform(collider->body, &transformStruct);
+  matrix_struct_to_array(&transformStruct, transformArray);
+  mat4_invert((mat4) &transformArray);
+  mat4_mulVec4((mat4) &transformArray, position);
+  *x = position[0];
+  *y = position[1];
+  *z = position[2];
+}
 
-void lovrColliderGetWorldPoint(Collider* collider, float x, float y, float z, float* wx, float* wy, float* wz) {}
+void lovrColliderGetWorldPoint(Collider* collider, float x, float y, float z, float* wx, float* wy, float* wz) {
+  float position[4] = { x, y, z, 1.f };
+  JPH_Matrix4x4 transformStruct;
+  float transformArray[16];
+  JPH_Body_GetWorldTransform(collider->body, &transformStruct);
+  matrix_struct_to_array(&transformStruct, transformArray);
+  mat4_mulVec4((mat4) &transformArray, position);
+  *wx = position[0];
+  *wy = position[1];
+  *wz = position[2];
+}
 
-void lovrColliderGetLocalVector(Collider* collider, float wx, float wy, float wz, float* x, float* y, float* z) {}
+void lovrColliderGetLocalVector(Collider* collider, float wx, float wy, float wz, float* x, float* y, float* z) {
+  float direction[4] = { wx, wy, wz, 0.f };
+  JPH_Matrix4x4 transformStruct;
+  float transformArray[16];
+  JPH_Body_GetWorldTransform(collider->body, &transformStruct);
+  matrix_struct_to_array(&transformStruct, transformArray);
+  mat4_invert((mat4) &transformArray);
+  mat4_mulVec4((mat4) &transformArray, direction);
+  *x = direction[0];
+  *y = direction[1];
+  *z = direction[2];
+}
 
-void lovrColliderGetWorldVector(Collider* collider, float x, float y, float z, float* wx, float* wy, float* wz) {}
+void lovrColliderGetWorldVector(Collider* collider, float x, float y, float z, float* wx, float* wy, float* wz) {
+  float direction[4] = { x, y, z, 0.f };
+  JPH_Matrix4x4 transformStruct;
+  float transformArray[16];
+  JPH_Body_GetWorldTransform(collider->body, &transformStruct);
+  matrix_struct_to_array(&transformStruct, transformArray);
+  mat4_mulVec4((mat4) &transformArray, direction);
+  *wx = direction[0];
+  *wy = direction[1];
+  *wz = direction[2];
+}
 
-void lovrColliderGetLinearVelocityFromLocalPoint(Collider* collider, float x, float y, float z, float* vx, float* vy, float* vz) {}
+void lovrColliderGetLinearVelocityFromLocalPoint(Collider* collider, float x, float y, float z, float* vx, float* vy, float* vz) {
+  float wx, wy, wz;
+  lovrColliderGetWorldPoint(collider, x, y, z, &wx, &wy, &wz);
+  lovrColliderGetLinearVelocityFromWorldPoint(collider, wx, wy, wz, vx, vy, vz);
+}
 
-void lovrColliderGetLinearVelocityFromWorldPoint(Collider* collider, float wx, float wy, float wz, float* vx, float* vy, float* vz) {}
+void lovrColliderGetLinearVelocityFromWorldPoint(Collider* collider, float wx, float wy, float wz, float* vx, float* vy, float* vz) {
+  JPH_RVec3 point = {
+    .x = wx,
+    .y = wy,
+    .z = wz
+  };
+  JPH_Vec3 velocity;
+  JPH_BodyInterface_GetPointVelocity(collider->world->body_interface, collider->id, &point, &velocity);
+  *vx = velocity.x;
+  *vy = velocity.y;
+  *vz = velocity.z;
+}
 
 void lovrColliderGetAABB(Collider* collider, float aabb[6]) {
   JPH_AABox box = JPH_Body_GetWorldSpaceBounds(collider->body);
@@ -771,9 +833,15 @@ Collider* lovrShapeGetCollider(Shape* shape) {
   return shape->collider;
 }
 
-bool lovrShapeIsEnabled(Shape* shape) {}
+bool lovrShapeIsEnabled(Shape* shape) {
+  return true;
+}
 
-void lovrShapeSetEnabled(Shape* shape, bool enabled) {}
+void lovrShapeSetEnabled(Shape* shape, bool enabled) {
+  if (!enabled) {
+    lovrLog(LOG_WARN, "PHY", "Jolt doesn't support disabling shapes");
+  }
+}
 
 bool lovrShapeIsSensor(Shape* shape) {
   lovrLog(LOG_WARN, "PHY", "Jolt sensor property fetched from collider, not shape");
@@ -794,18 +862,18 @@ void lovrShapeSetUserData(Shape* shape, void* data) {
 }
 
 void lovrShapeGetPosition(Shape* shape, float* x, float* y, float* z) {
-  // todo: composite shapes
+  // todo: compound shapes
   *x = 0.f;
   *y = 0.f;
   *z = 0.f;
 }
 
 void lovrShapeSetPosition(Shape* shape, float x, float y, float z) {
-  // todo: composite shapes
+  // todo: compound shapes
 }
 
 void lovrShapeGetOrientation(Shape* shape, float* orientation) {
-  // todo: composite shapes
+  // todo: compound shapes
   orientation[0] = 0.f;
   orientation[1] = 0.f;
   orientation[2] = 0.f;
@@ -813,13 +881,13 @@ void lovrShapeGetOrientation(Shape* shape, float* orientation) {
 }
 
 void lovrShapeSetOrientation(Shape* shape, float* orientation) {
-  // todo: composite shapes
+  // todo: compound shapes
 }
 
 void lovrShapeGetMass(Shape* shape, float density, float* cx, float* cy, float* cz, float* mass, float inertia[6]) {}
 
 void lovrShapeGetAABB(Shape* shape, float aabb[6]) {
-  // todo: with composite shapes this is no longer correct
+  // todo: with compound shapes this is no longer correct
   lovrColliderGetAABB(shape->collider, aabb);
 }
 
