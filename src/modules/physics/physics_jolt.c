@@ -1,12 +1,17 @@
 #include <stdlib.h>
-#include "physics.h"
-#include "util.h"
-#include "joltc.h"
 #include "core/maf.h"
+#include "util.h"
+#include "physics.h"
+#include "joltc.h"
 
-static JPH_TempAllocator *temp_allocator;
-static JPH_JobSystem *job_system;
+#define MAX_BODIES 2048
+#define MAX_BODY_PAIRS 2048
+#define MAX_CONTACT_CONSTRAINTS 2048
+
 static bool initialized = false;
+static JPH_Shape* queryBox;
+static JPH_Shape* querySphere;
+static JPH_AllHit_CastShapeCollector* cast_shape_collector;
 
 struct World {
   uint32_t ref;
@@ -18,13 +23,6 @@ struct World {
   JPH_ObjectVsBroadPhaseLayerFilter* broad_phase_layer_filter;
   JPH_ObjectLayerPairFilter* object_layer_pair_filter;
   char* tags[MAX_TAGS];
-  uint16_t masks[MAX_TAGS];
-/*
-  dWorldID id;
-  dSpaceID space;
-  dJointGroupID contactGroup;
-  arr_t(Shape*) overlaps;
-*/
 };
 
 struct Collider {
@@ -55,67 +53,26 @@ struct Joint {
   void* userdata;
 };
 
-// Broad phase layers
+// Broad phase and object phase layers
+#define NUM_OP_LAYERS ((MAX_TAGS + 1) * 2)
 #define NUM_BP_LAYERS 2
-#define BP_LAYER_KINEMATIC 0
-#define BP_LAYER_DYNAMIC 1
 
 // UNTAGGED = 16 is mapped to object layers: 32 is kinematic untagged, and 33 is dynamic untagged
 // (NO_TAG = ~0u is not used in jolt implementation)
 #define UNTAGGED (MAX_TAGS)
 
-const char* broadphase_name_from_object[NUM_BP_LAYERS] = {
-  "kinematic",
-  "dynamic"
-};
-
-static uint32_t
-BPLayerInterface_GetNumBroadPhaseLayers(const JPH_BroadPhaseLayerInterface* interface) {
-  return 2;
+static void matrix_struct_to_array(const JPH_RMatrix4x4* matrix, float arr[16]) {
+  arr[0] = matrix->m11; arr[1] = matrix->m12; arr[2] = matrix->m13; arr[3] = matrix->m14;
+  arr[4] = matrix->m21; arr[5] = matrix->m22; arr[6] = matrix->m23; arr[7] = matrix->m24;
+  arr[8] = matrix->m31; arr[9] = matrix->m32; arr[10] = matrix->m33; arr[11] = matrix->m34;
+  arr[12] = matrix->m41; arr[13] = matrix->m42; arr[14] = matrix->m43; arr[15] = matrix->m44;
 }
 
-// each tag corresponds to two object layers, the kinematic variant and dynamic variant
-static JPH_BroadPhaseLayer
-BPLayerInterface_GetBroadPhaseLayer(const JPH_BroadPhaseLayerInterface* self, JPH_ObjectLayer layer) {
-  return layer % 2;
-}
-
-static const char*
-BPLayerInterface_GetBroadPhaseLayerName(const JPH_BroadPhaseLayerInterface* self, JPH_BroadPhaseLayer layer) {
-  return broadphase_name_from_object[layer];
-}
-
-static JPH_Bool32
-BroadPhaseLayerFilter_ShouldCollide(const JPH_ObjectVsBroadPhaseLayerFilter* filter, JPH_ObjectLayer layer1, JPH_BroadPhaseLayer bp_layer2) {
-  if (layer1 % 2 == 0) {
-    return bp_layer2 == BP_LAYER_DYNAMIC;
-  } else {
-    return true;
-  }
-}
-
-static World* global_world; // todo: better access to world masks in narrowphase filter; this supports only one world
-
-static JPH_Bool32
-ObjectLayerPairFilter_ShouldCollide(const JPH_ObjectLayerPairFilter* filter, JPH_ObjectLayer object1, JPH_ObjectLayer object2) {
-  if ((object1 % 2 == 0) && (object2 % 2 == 0)) {
-    // todo: check that this is filtered out already during broadphase
-    return false;
-  }
-  unsigned tag1 = object1 >> 1;
-  unsigned tag2 = object2 >> 1;
-  return
-    tag1 == UNTAGGED ||
-    tag2 == UNTAGGED ||
-    ((global_world->masks[tag1] & (1 << tag2)) &&
-     (global_world->masks[tag2] & (1 << tag1)));
-}
-
-static void matrix_struct_to_array(const JPH_Matrix4x4* matrix, float arr[16]) {
-    arr[0] = matrix->m11; arr[1] = matrix->m12; arr[2] = matrix->m13; arr[3] = matrix->m14;
-    arr[4] = matrix->m21; arr[5] = matrix->m22; arr[6] = matrix->m23; arr[7] = matrix->m24;
-    arr[8] = matrix->m31; arr[9] = matrix->m32; arr[10] = matrix->m33; arr[11] = matrix->m34;
-    arr[12] = matrix->m41; arr[13] = matrix->m42; arr[14] = matrix->m43; arr[15] = matrix->m44;
+static void array_to_rmatrix_struct(const float arr[16], JPH_RMatrix4x4* matrix) {
+  matrix->m11 = arr[0]; matrix->m12 = arr[1]; matrix->m13 = arr[2]; matrix->m14 = arr[3];
+  matrix->m21 = arr[4]; matrix->m22 = arr[5]; matrix->m23 = arr[6]; matrix->m24 = arr[7];
+  matrix->m31 = arr[8]; matrix->m32 = arr[9]; matrix->m33 = arr[10]; matrix->m34 = arr[11];
+  matrix->m41 = arr[12]; matrix->m42 = arr[13]; matrix->m43 = arr[14]; matrix->m44 = arr[15];
 }
 
 // XXX slow, but probably fine (tag names are not on any critical path), could switch to hashing if needed
@@ -130,63 +87,65 @@ static uint32_t findTag(World* world, const char* name) {
 
 bool lovrPhysicsInit(void) {
   if (initialized) return false;
-  JPH_Init();
-  temp_allocator = JPH_TempAllocator_Create(32 * 1024 * 1024);
-  job_system = JPH_JobSystemThreadPool_Create(2048, 8, -1);
+  JPH_Init(32 * 1024 * 1024);
+  cast_shape_collector = JPH_AllHit_CastShapeCollector_Create();
+  querySphere = (JPH_Shape *) JPH_SphereShape_Create(1.f);
+  const JPH_Vec3 halfExtent = {
+    .x = 0.5,
+    .y = 0.5,
+    .z = 0.5
+  };
+  queryBox = (JPH_Shape *) JPH_BoxShape_Create(&halfExtent, 0.f);
+
   return initialized = true;
 }
 
 void lovrPhysicsDestroy(void) {
   if (!initialized) return;
   JPH_Shutdown();
-  JPH_JobSystem_Destroy(job_system);
-  JPH_TempAllocator_Destroy(temp_allocator);
   initialized = false;
 }
 
-
 World* lovrWorldCreate(float xg, float yg, float zg, bool allowSleep, const char** tags, uint32_t tagCount) {
   World* world = calloc(1, sizeof(World));
-  global_world = world;
   lovrAssert(world, "Out of memory");
-  world->physics_system = JPH_PhysicsSystem_Create();
-  world->body_interface = JPH_PhysicsSystem_GetBodyInterface(world->physics_system);
+
   world->collision_steps = 1;
   world->ref = 1;
-  const uint32_t max_bodies = 1024 * 2;
-  const uint32_t num_body_mutexes = 0; // zero is auto-detect
-  const uint32_t max_body_pairs = 1024 * 2;
-  const uint32_t max_contact_constraints = 1024 * 2;
-  world->broad_phase_layer_interface = JPH_BroadPhaseLayerInterface_Create();
-  JPH_BroadPhaseLayerInterface_SetProcs((JPH_BroadPhaseLayerInterface_Procs){
-    .GetNumBroadPhaseLayers = BPLayerInterface_GetNumBroadPhaseLayers,
-    .GetBroadPhaseLayer = BPLayerInterface_GetBroadPhaseLayer,
-    .GetBroadPhaseLayerName = BPLayerInterface_GetBroadPhaseLayerName
-  });
-  world->broad_phase_layer_filter = JPH_ObjectVsBroadPhaseLayerFilter_Create();
-  JPH_ObjectVsBroadPhaseLayerFilter_SetProcs((JPH_ObjectVsBroadPhaseLayerFilter_Procs) {
-    .ShouldCollide = BroadPhaseLayerFilter_ShouldCollide
-  });
-  world->object_layer_pair_filter = JPH_ObjectLayerPairFilter_Create();
-  JPH_ObjectLayerPairFilter_SetProcs((JPH_ObjectLayerPairFilter_Procs) {
-    .ShouldCollide = ObjectLayerPairFilter_ShouldCollide
-  });
-  JPH_PhysicsSystem_Init(
-    world->physics_system,
-    max_bodies,
-    num_body_mutexes,
-    max_body_pairs,
-    max_contact_constraints,
-    world->broad_phase_layer_interface,
-    world->broad_phase_layer_filter,
-    world->object_layer_pair_filter);
+  const uint32_t objectPhaseLayers = (MAX_TAGS + 1) * 2;
+  world->broad_phase_layer_interface = JPH_BroadPhaseLayerInterfaceTable_Create(NUM_OP_LAYERS, NUM_BP_LAYERS);
+  world->object_layer_pair_filter = JPH_ObjectLayerPairFilterTable_Create(NUM_OP_LAYERS);
+  for (uint32_t i = 0; i < NUM_OP_LAYERS; i++) {
+    for (uint32_t j = i; j < NUM_OP_LAYERS; j++) {
+    JPH_BroadPhaseLayerInterfaceTable_MapObjectToBroadPhaseLayer(world->broad_phase_layer_interface, i, i % 2);
+      if (i % 2 == 0 && j % 2 == 0) {
+        JPH_ObjectLayerPairFilterTable_DisableCollision(world->object_layer_pair_filter, i, j);
+      } else {
+        JPH_ObjectLayerPairFilterTable_EnableCollision(world->object_layer_pair_filter, i, j);
+      }
+    }
+  }
+  world->broad_phase_layer_filter = JPH_ObjectVsBroadPhaseLayerFilterTable_Create(
+    world->broad_phase_layer_interface, NUM_BP_LAYERS,
+    world->object_layer_pair_filter, NUM_OP_LAYERS);
+
+  JPH_PhysicsSystemSettings settings = {
+    .maxBodies = MAX_BODIES,
+    .maxBodyPairs = MAX_BODY_PAIRS,
+    .maxContactConstraints = MAX_CONTACT_CONSTRAINTS,
+    .broadPhaseLayerInterface = world->broad_phase_layer_interface,
+    .objectLayerPairFilter = world->object_layer_pair_filter,
+    .objectVsBroadPhaseLayerFilter = world->broad_phase_layer_filter
+  };
+  world->physics_system = JPH_PhysicsSystem_Create(&settings);
+  world->body_interface = JPH_PhysicsSystem_GetBodyInterface(world->physics_system);
+
   lovrWorldSetGravity(world, xg, yg, zg);
   for (uint32_t i = 0; i < tagCount; i++) {
     size_t size = strlen(tags[i]) + 1;
     world->tags[i] = malloc(size);
     memcpy(world->tags[i], tags[i], size);
   }
-  memset(world->masks, 0xff, sizeof(world->masks));
   return world;
 }
 
@@ -209,18 +168,13 @@ void lovrWorldDestroyData(World* world) {
     lovrColliderDestroyData(world->head);
     world->head = next;
   }
-  JPH_ObjectLayerPairFilter_Destroy(world->object_layer_pair_filter);
-  JPH_ObjectVsBroadPhaseLayerFilter_Destroy(world->broad_phase_layer_filter);
-  JPH_BroadPhaseLayerInterface_Destroy(world->broad_phase_layer_interface);
   JPH_PhysicsSystem_Destroy(world->physics_system);
 }
 
 void lovrWorldUpdate(World* world, float dt, CollisionResolver resolver, void* userdata) {
-  JPH_PhysicsUpdateError err = JPH_PhysicsSystem_Update(
+  JPH_PhysicsUpdateError err = JPH_PhysicsSystem_Step(
     world->physics_system,
-    dt, world->collision_steps,
-    temp_allocator,
-    job_system);
+    dt, world->collision_steps);
 }
 
 int lovrWorldGetStepCount(World* world) {
@@ -242,11 +196,81 @@ int lovrWorldCollide(World* world, Shape* a, Shape* b, float friction, float res
 
 void lovrWorldGetContacts(World* world, Shape* a, Shape* b, Contact contacts[MAX_CONTACTS], uint32_t* count) {}
 
-void lovrWorldRaycast(World* world, float x1, float y1, float z1, float x2, float y2, float z2, RaycastCallback callback, void* userdata) {}
+void lovrWorldRaycast(World* world, float x1, float y1, float z1, float x2, float y2, float z2, RaycastCallback callback, void* userdata) {
+  const JPH_NarrowPhaseQuery* query = JPC_PhysicsSystem_GetNarrowPhaseQueryNoLock(world->physics_system);
+  const JPH_RVec3 origin = {.x = x1, .y = y1, .z = z1};
+  const JPH_Vec3 direction = {.x = x2 - x1, .y = y2 - y1, .z = z2 - z1};
+  JPH_AllHit_CastRayCollector* collector = JPH_AllHit_CastRayCollector_Create();
+  JPH_NarrowPhaseQuery_CastRayAll(query,
+    &origin, &direction,
+    collector,
+    NULL,
+    NULL,
+    NULL);
+  size_t hit_count;
+  JPH_RayCastResult* hit_array = JPH_AllHit_CastRayCollector_GetHits(collector, &hit_count);
+  for (int i = 0; i < hit_count; i++) {
+    float x = x1 + hit_array[i].fraction * (x2 - x1);
+    float y = y1 + hit_array[i].fraction * (y2 - y1);
+    float z = z1 + hit_array[i].fraction * (z2 - z1);
+    // todo: assuming one shape per collider; doesn't support compound shape
+    Collider* collider = (Collider*) JPH_BodyInterface_GetUserData(
+      world->body_interface,
+      hit_array[i].bodyID);
+    size_t count;
+    Shape** shape = lovrColliderGetShapes(collider, &count);
+    const JPH_RVec3 position = {.x = x, .y = y, .z = z};
+    JPH_Vec3 normal;
+    JPH_Body_GetWorldSpaceSurfaceNormal(collider->body, hit_array[i].subShapeID2, &position, &normal);
+    bool shouldStop = callback(
+      shape[0], // assumes one shape per collider; todo: compound shapes
+      x, y, z,
+      normal.x, normal.y, normal.z,
+      userdata);
+    if (shouldStop)
+      break;
+  }
+  JPH_AllHit_CastRayCollector_Destroy(collector);
+}
 
-bool lovrWorldQueryBox(World* world, float position[3], float size[3], QueryCallback callback, void* userdata) {}
+static bool lovrWorldQueryShape(World* world, JPH_Shape* shape, float position[3], float scale[3], QueryCallback callback, void* userdata) {
+  JPH_RMatrix4x4 transform;
+  JPH_Vec3 direction = { 0.f };
+  JPH_RVec3 base_offset = { 0.f };
+  const JPH_NarrowPhaseQuery* query = JPC_PhysicsSystem_GetNarrowPhaseQueryNoLock(world->physics_system);
+  float transformArray[16] = {
+    scale[0], 0.f, 0.f, 0.f,
+    0.f, scale[1], 0.f, 0.f,
+    0.f, 0.f, scale[2], 0.f,
+    position[0], position[1], position[2], 1.f
+  };
+  array_to_rmatrix_struct(transformArray, &transform);
+  JPH_AllHit_CastShapeCollector_Reset(cast_shape_collector);
+  JPH_NarrowPhaseQuery_CastShape(query, queryBox, &transform, &direction, &base_offset, cast_shape_collector);
+  size_t hit_count;
+  JPH_ShapeCastResult* hit_array = JPH_AllHit_CastShapeCollector_GetHits(cast_shape_collector, &hit_count);
+  for (int i = 0; i < hit_count; i++) {
+    JPH_BodyID id = JPH_AllHit_CastShapeCollector_GetBodyID2(cast_shape_collector, i);
+    Collider* collider = (Collider*) JPH_BodyInterface_GetUserData(
+      world->body_interface,
+      id);
+    size_t count;
+    Shape** shape = lovrColliderGetShapes(collider, &count);
+    bool shouldStop = callback(shape[0], userdata);
+    if (shouldStop)
+      break;
+  }
+  return hit_count > 0;
+}
 
-bool lovrWorldQuerySphere(World* world, float position[3], float radius, QueryCallback callback, void* userdata) {}
+bool lovrWorldQueryBox(World* world, float position[3], float size[3], QueryCallback callback, void* userdata) {
+  return lovrWorldQueryShape(world, queryBox, position, size, callback, userdata);
+}
+
+bool lovrWorldQuerySphere(World* world, float position[3], float radius, QueryCallback callback, void* userdata) {
+  float scale[3] = {radius, radius, radius};
+  return lovrWorldQueryShape(world, querySphere, position, scale, callback, userdata);
+}
 
 Collider* lovrWorldGetFirstCollider(World* world) {
   return world->head;
@@ -316,38 +340,42 @@ const char* lovrWorldGetTagName(World* world, uint32_t tag) {
 void lovrWorldDisableCollisionBetween(World* world, const char* tag1, const char* tag2) {
   uint32_t i = findTag(world, tag1);
   uint32_t j = findTag(world, tag2);
-
   if (i == UNTAGGED || j == UNTAGGED) {
     return;
   }
-
-  world->masks[i] &= ~(1 << j);
-  world->masks[j] &= ~(1 << i);
-  return;
+  uint32_t iStatic = i * 2;
+  uint32_t jStatic = j * 2;
+  uint32_t iDynamic = i * 2 + 1;
+  uint32_t jDynamic = j * 2 + 1;
+  JPH_ObjectLayerPairFilterTable_DisableCollision(world->object_layer_pair_filter, iDynamic, jDynamic);
+  JPH_ObjectLayerPairFilterTable_DisableCollision(world->object_layer_pair_filter, iDynamic, jStatic);
+  JPH_ObjectLayerPairFilterTable_DisableCollision(world->object_layer_pair_filter, iStatic, jDynamic);
 }
 
 void lovrWorldEnableCollisionBetween(World* world, const char* tag1, const char* tag2) {
   uint32_t i = findTag(world, tag1);
   uint32_t j = findTag(world, tag2);
-
   if (i == UNTAGGED || j == UNTAGGED) {
     return;
   }
-
-  world->masks[i] |= (1 << j);
-  world->masks[j] |= (1 << i);
-  return;
+  uint32_t iStatic = i * 2;
+  uint32_t jStatic = j * 2;
+  uint32_t iDynamic = i * 2 + 1;
+  uint32_t jDynamic = j * 2 + 1;
+  JPH_ObjectLayerPairFilterTable_EnableCollision(world->object_layer_pair_filter, iDynamic, jDynamic);
+  JPH_ObjectLayerPairFilterTable_EnableCollision(world->object_layer_pair_filter, iDynamic, jStatic);
+  JPH_ObjectLayerPairFilterTable_EnableCollision(world->object_layer_pair_filter, iStatic, jDynamic);
 }
 
 bool lovrWorldIsCollisionEnabledBetween(World* world, const char* tag1, const char* tag2) {
   uint32_t i = findTag(world, tag1);
   uint32_t j = findTag(world, tag2);
-
   if (i == UNTAGGED || j == UNTAGGED) {
     return true;
   }
-
-  return (world->masks[i] & (1 << j)) && (world->masks[j] & (1 << i));
+  uint32_t iDynamic = i * 2 + 1;
+  uint32_t jDynamic = j * 2 + 1;
+  return JPH_ObjectLayerPairFilterTable_ShouldCollide(world->object_layer_pair_filter, iDynamic, jDynamic);
 }
 
 Collider* lovrColliderCreate(World* world, float x, float y, float z) {
@@ -362,10 +390,9 @@ Collider* lovrColliderCreate(World* world, float x, float y, float z) {
 
   const JPH_RVec3 position = { .x = x, .y = y, .z = z };
   const JPH_Quat rotation = { .x = 0.f, .y = 0.f, .z = 0.f, .w = 1.f };
-  // todo: a temp shape is created, to be replaced in lovrColliderAddShape
-  JPH_Shape* shape = (JPH_Shape *) JPH_SphereShape_Create(1);
+  // todo: a placeholder querySphere shape is used in collider, then replaced in lovrColliderAddShape
   JPH_BodyCreationSettings* settings = JPH_BodyCreationSettings_Create3(
-    shape, &position, &rotation, motionType, objectLayer);
+    querySphere, &position, &rotation, motionType, objectLayer);
   collider->body = JPH_BodyInterface_CreateBody(world->body_interface, settings);
   JPH_BodyCreationSettings_Destroy(settings);
   collider->id = JPH_Body_GetID(collider->body);
@@ -579,7 +606,8 @@ void lovrColliderSetMass(Collider* collider, float mass) {
   if (collider->shapes.length > 0) {
     JPH_MotionProperties * motion_properties = JPH_Body_GetMotionProperties(collider->body);
     Shape * shape = collider->shapes.data[0];
-    JPH_MassProperties * mass_properties = JPH_Shape_GetMassProperties(shape->shape);
+    JPH_MassProperties * mass_properties;
+    JPH_Shape_GetMassProperties(shape->shape, mass_properties);
     JPH_MassProperties_ScaleToMass(mass_properties, mass);
     JPH_MotionProperties_SetMassProperties(motion_properties, JPH_AllowedDOFs_All, mass_properties);
   }
@@ -736,7 +764,7 @@ void lovrColliderGetLocalCenter(Collider* collider, float* x, float* y, float* z
 
 void lovrColliderGetLocalPoint(Collider* collider, float wx, float wy, float wz, float* x, float* y, float* z) {
   float position[4] = { wx, wy, wz, 1.f };
-  JPH_Matrix4x4 transformStruct;
+  JPH_RMatrix4x4 transformStruct;
   float transformArray[16];
   JPH_Body_GetWorldTransform(collider->body, &transformStruct);
   matrix_struct_to_array(&transformStruct, transformArray);
@@ -749,7 +777,7 @@ void lovrColliderGetLocalPoint(Collider* collider, float wx, float wy, float wz,
 
 void lovrColliderGetWorldPoint(Collider* collider, float x, float y, float z, float* wx, float* wy, float* wz) {
   float position[4] = { x, y, z, 1.f };
-  JPH_Matrix4x4 transformStruct;
+  JPH_RMatrix4x4 transformStruct;
   float transformArray[16];
   JPH_Body_GetWorldTransform(collider->body, &transformStruct);
   matrix_struct_to_array(&transformStruct, transformArray);
@@ -761,7 +789,7 @@ void lovrColliderGetWorldPoint(Collider* collider, float x, float y, float z, fl
 
 void lovrColliderGetLocalVector(Collider* collider, float wx, float wy, float wz, float* x, float* y, float* z) {
   float direction[4] = { wx, wy, wz, 0.f };
-  JPH_Matrix4x4 transformStruct;
+  JPH_RMatrix4x4 transformStruct;
   float transformArray[16];
   JPH_Body_GetWorldTransform(collider->body, &transformStruct);
   matrix_struct_to_array(&transformStruct, transformArray);
@@ -774,7 +802,7 @@ void lovrColliderGetLocalVector(Collider* collider, float wx, float wy, float wz
 
 void lovrColliderGetWorldVector(Collider* collider, float x, float y, float z, float* wx, float* wy, float* wz) {
   float direction[4] = { x, y, z, 0.f };
-  JPH_Matrix4x4 transformStruct;
+  JPH_RMatrix4x4 transformStruct;
   float transformArray[16];
   JPH_Body_GetWorldTransform(collider->body, &transformStruct);
   matrix_struct_to_array(&transformStruct, transformArray);
@@ -804,7 +832,8 @@ void lovrColliderGetLinearVelocityFromWorldPoint(Collider* collider, float wx, f
 }
 
 void lovrColliderGetAABB(Collider* collider, float aabb[6]) {
-  JPH_AABox box = JPH_Body_GetWorldSpaceBounds(collider->body);
+  JPH_AABox box;
+  JPH_Body_GetWorldSpaceBounds(collider->body, &box);
   aabb[0] = box.min.x;
   aabb[1] = box.max.x;
   aabb[2] = box.min.y;
@@ -1044,8 +1073,8 @@ TerrainShape* lovrTerrainShapeCreate(float* vertices, uint32_t widthSamples, uin
 void lovrJointGetAnchors(Joint* joint, float anchor1[3], float anchor2[3]) {
   JPH_Body * body1 = JPH_TwoBodyConstraint_GetBody1((JPH_TwoBodyConstraint *) joint->constraint);
   JPH_Body * body2 = JPH_TwoBodyConstraint_GetBody2((JPH_TwoBodyConstraint *) joint->constraint);
-  JPH_Matrix4x4 centerOfMassTransformStruct1;
-  JPH_Matrix4x4 centerOfMassTransformStruct2;
+  JPH_RMatrix4x4 centerOfMassTransformStruct1;
+  JPH_RMatrix4x4 centerOfMassTransformStruct2;
   JPH_Body_GetCenterOfMassTransform(body1, &centerOfMassTransformStruct1);
   JPH_Body_GetCenterOfMassTransform(body2, &centerOfMassTransformStruct2);
   JPH_Matrix4x4 constraintToBody1;
@@ -1292,7 +1321,7 @@ HingeJoint* lovrHingeJointCreate(Collider* a, Collider* b, float anchor[3], floa
     .z = anchor[2]
   };
 
-  JPH_RVec3 axisVec = {
+  JPH_Vec3 axisVec = {
     .x = axis[0],
     .y = axis[1],
     .z = axis[2]
@@ -1320,11 +1349,11 @@ void lovrHingeJointSetAnchor(HingeJoint* joint, float anchor[3]) {
 }
 
 void lovrHingeJointGetAxis(HingeJoint* joint, float axis[3]) {
-  JPH_RVec3 resultAxis;
+  JPH_Vec3 resultAxis;
   JPH_HingeConstraintSettings * settings = JPH_HingeConstraint_GetSettings((JPH_HingeConstraint *) joint->constraint);
   JPH_HingeConstraintSettings_GetHingeAxis1(settings, &resultAxis);
   JPH_Body * body1 = JPH_TwoBodyConstraint_GetBody1((JPH_TwoBodyConstraint *) joint->constraint);
-  JPH_Matrix4x4 centerOfMassTransformStruct;
+  JPH_RMatrix4x4 centerOfMassTransformStruct;
   JPH_Body_GetCenterOfMassTransform(body1, &centerOfMassTransformStruct);
   JPH_Matrix4x4 constraintToBody;
   JPH_TwoBodyConstraint_GetConstraintToBody1Matrix((JPH_TwoBodyConstraint *) joint->constraint, &constraintToBody);
@@ -1379,7 +1408,7 @@ SliderJoint* lovrSliderJointCreate(Collider* a, Collider* b, float axis[3]) {
   joint->type = JOINT_SLIDER;
 
   JPH_SliderConstraintSettings* settings = JPH_SliderConstraintSettings_Create();
-  JPH_RVec3 axisVec = {
+  const JPH_Vec3 axisVec = {
     .x = axis[0],
     .y = axis[1],
     .z = axis[2]
@@ -1395,11 +1424,11 @@ SliderJoint* lovrSliderJointCreate(Collider* a, Collider* b, float axis[3]) {
 }
 
 void lovrSliderJointGetAxis(SliderJoint* joint, float axis[3]) {
-  JPH_RVec3 resultAxis;
+  JPH_Vec3 resultAxis;
   JPH_SliderConstraintSettings * settings = JPH_SliderConstraint_GetSettings((JPH_SliderConstraint *) joint->constraint);
-  JPH_SliderConstraintSettings_GetSliderAxis1(settings, &resultAxis);
+  JPH_SliderConstraintSettings_GetSliderAxis(settings, &resultAxis);
   JPH_Body * body1 = JPH_TwoBodyConstraint_GetBody1((JPH_TwoBodyConstraint *) joint->constraint);
-  JPH_Matrix4x4 centerOfMassTransformStruct;
+  JPH_RMatrix4x4 centerOfMassTransformStruct;
   JPH_Body_GetCenterOfMassTransform(body1, &centerOfMassTransformStruct);
   JPH_Matrix4x4 constraintToBody;
   JPH_TwoBodyConstraint_GetConstraintToBody1Matrix((JPH_TwoBodyConstraint *) joint->constraint, &constraintToBody);
