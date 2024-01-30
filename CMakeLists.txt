@@ -182,12 +182,14 @@ if(LOVR_ENABLE_PHYSICS)
       set(LOVR_PHYSICS_LIB ode)
     endif()
   elseif(LOVR_PHYSICS_LIBRARY STREQUAL "JOLT")
-    add_subdirectory(src/lib/joltc jolt)
-    include_directories(src/lib/joltc "${CMAKE_CURRENT_BINARY_DIR}/src/lib/joltc")
-    include_directories(src/lib/joltc/JoltC "${CMAKE_CURRENT_BINARY_DIR}/src/lib/joltc/JoltC")
+    set(BUILD_SHARED_LIBS OFF)
+    include_directories(deps/jolt-physics-sharp/src/joltc)
+    add_subdirectory(deps/jolt-physics-sharp/src/joltc jolt)
+    target_compile_options(joltc PRIVATE -Wno-comment)
+    set(PHYSICS_REPO_ROOT ${CMAKE_SOURCE_DIR}/deps/jolt-physics-sharp/src/joltc)
+    include(deps/jolt-physics-sharp/src/joltc/Jolt/Jolt.cmake)
     set(LOVR_PHYSICS_LIB joltc)
   endif()
-
 endif()
 
 # glslang

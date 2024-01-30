@@ -28,3 +28,6 @@
 [submodule "plugins/lua-enet"]
 	path = plugins/lua-enet
 	url = https://github.com/bjornbytes/lua-enet
+[submodule "deps/jolt-physics-sharp"]
+	path = deps/jolt-physics-sharp
+	url = https://github.com/amerkoleci/JoltPhysicsSharp
