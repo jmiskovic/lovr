@@ -193,6 +193,8 @@ void os_set_mouse_mode(os_mouse_mode mode);
 bool os_is_mouse_down(os_mouse_button button);
 bool os_is_key_down(os_key key);
 
+uintptr_t os_get_android_window();
+
 size_t os_get_home_directory(char* buffer, size_t size);
 size_t os_get_data_directory(char* buffer, size_t size);
 size_t os_get_working_directory(char* buffer, size_t size);

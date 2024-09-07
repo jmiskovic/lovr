@@ -137,6 +137,7 @@ function lovr.boot()
   end
 
   if lovr.system and conf.window then
+    lovr.event.pump() -- needed for APP_CMD_INIT_WINDOW event in onAppCmd()
     lovr.system.openWindow(conf.window)
   end
 

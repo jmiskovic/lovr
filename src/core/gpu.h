@@ -174,6 +174,9 @@ typedef struct {
       uintptr_t connection;
       uintptr_t window;
     } xcb;
+   struct {
+      uintptr_t window;
+    } android;
   };
 } gpu_surface_info;
 

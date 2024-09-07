@@ -5,6 +5,9 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include "event/event.h"
+#include <android/looper.h>
+#include <android/sensor.h>
 
 // This is probably bad, but makes things easier to build
 #include <android_native_app_glue.c>
@@ -16,15 +19,139 @@ static struct {
   fn_key* onKeyboardEvent;
   fn_text* onTextEvent;
   fn_permission* onPermissionEvent;
+  ASensorEventQueue *sensor_event_queue;
+  bool is_window_open;
+  uint32_t width;
+  uint32_t height;
 } state;
 
 static void onAppCmd(struct android_app* app, int32_t cmd) {
-  if (cmd == APP_CMD_DESTROY && state.onQuit) {
-    state.onQuit();
+  switch (cmd) {
+    case APP_CMD_INIT_WINDOW:
+      // The window is being shown, get it ready.
+      state.is_window_open = true;
+      state.width = ANativeWindow_getWidth(app->window);
+      state.height = ANativeWindow_getHeight(app->window);
+      break;
+    case APP_CMD_TERM_WINDOW:
+    case APP_CMD_DESTROY:
+      // The window is being hidden or closed, clean it up.
+      __android_log_write(ANDROID_LOG_DEBUG, "LOVR", "onAppCmd APP_CMD_DESTROY");
+      state.onQuit();
+      break;
+    default:
+      break;
   }
 }
 
+static int handleTouch(struct android_app* app, AInputEvent* event) {
+  if (AInputEvent_getType(event) == AINPUT_EVENT_TYPE_MOTION) {
+    size_t pointer_count = AMotionEvent_getPointerCount(event);
+    int32_t action = AMotionEvent_getAction(event);
+    int32_t pointer_index = action >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+    int32_t pointer_id = AMotionEvent_getPointerId(event, pointer_index);
+    /*
+      The pointer index of each pointer in the event ranges from 0 to one less than
+      the value returned by getPointerCount().
+
+      The order in which individual pointers appear within a motion event is
+      undefined. Thus the pointer index of a pointer can change from one event to
+      the next but the pointer id of a pointer is guaranteed to remain constant as
+      long as the pointer remains active. Use the getPointerId(int) method to
+      obtain the pointer id of a pointer to track it across all subsequent motion
+      events in a gesture. Then for successive motion events, use the
+      findPointerIndex(int) method to obtain the pointer index for a given pointer
+      id in that motion event.
+    */
+    CustomEvent eventData;
+
+    switch (action & AMOTION_EVENT_ACTION_MASK)
+    {
+        case AMOTION_EVENT_ACTION_SCROLL:{
+          break;
+        }
+        // case AMOTION_EVENT_ACTION_HOVER_MOVE:
+        case AMOTION_EVENT_ACTION_MOVE:{
+          strncpy(eventData.name, "touchmoved", MAX_EVENT_NAME_LENGTH - 1);
+          for (int i = 0; i < pointer_count; i++) {
+            int32_t pointer_id = AMotionEvent_getPointerId(event, i);
+            float x = AMotionEvent_getX(event, i);
+            float y = AMotionEvent_getY(event, i);
+            float size = AMotionEvent_getSize(event, 0);
+            eventData.count = 4;
+            eventData.data[0].type = TYPE_NUMBER;
+            eventData.data[0].value.number = pointer_id;
+            eventData.data[1].type = TYPE_NUMBER;
+            eventData.data[1].value.number = x;
+            eventData.data[2].type = TYPE_NUMBER;
+            eventData.data[2].value.number = y;
+            eventData.data[3].type = TYPE_NUMBER;
+            eventData.data[3].value.number = size;
+            lovrEventPush((Event) {
+              .type = EVENT_CUSTOM,
+              .data.custom = eventData
+            });
+          }
+          return 1;
+        }
+
+        case AMOTION_EVENT_ACTION_POINTER_DOWN:
+        case AMOTION_EVENT_ACTION_DOWN:
+        {
+          strncpy(eventData.name, "touchpressed", MAX_EVENT_NAME_LENGTH - 1);
+          float x = AMotionEvent_getX(event, 0);
+          float y = AMotionEvent_getY(event, 0);
+          float size = AMotionEvent_getSize(event, 0);
+          eventData.count = 4;
+          eventData.data[0].type = TYPE_NUMBER;
+          eventData.data[0].value.number = pointer_id;
+          eventData.data[1].type = TYPE_NUMBER;
+          eventData.data[1].value.number = x;
+          eventData.data[2].type = TYPE_NUMBER;
+          eventData.data[2].value.number = y;
+          eventData.data[3].type = TYPE_NUMBER;
+          eventData.data[3].value.number = size;
+          lovrEventPush((Event) {
+            .type = EVENT_CUSTOM,
+            .data.custom = eventData
+          });
+          return 1;
+        }
+
+        case AMOTION_EVENT_ACTION_POINTER_UP:
+        case AMOTION_EVENT_ACTION_UP:
+        // case AMOTION_EVENT_ACTION_CANCEL:
+        {
+          strncpy(eventData.name, "touchreleased", MAX_EVENT_NAME_LENGTH - 1);
+          float x = AMotionEvent_getX(event, 0);
+          float y = AMotionEvent_getY(event, 0);
+          float size = AMotionEvent_getSize(event, 0);
+          eventData.count = 4;
+          eventData.data[0].type = TYPE_NUMBER;
+          eventData.data[0].value.number = pointer_id;
+          eventData.data[1].type = TYPE_NUMBER;
+          eventData.data[1].value.number = x;
+          eventData.data[2].type = TYPE_NUMBER;
+          eventData.data[2].value.number = y;
+          eventData.data[3].type = TYPE_NUMBER;
+          eventData.data[3].value.number = size;
+          lovrEventPush((Event) {
+            .type = EVENT_CUSTOM,
+            .data.custom = eventData
+          });
+          return 1;
+        }
+    }
+  }
+  return 0;
+}
+
+
 static int32_t onInputEvent(struct android_app* app, AInputEvent* event) {
+  if (handleTouch(app, event)) {
+    return 1;
+  }
+
   if (AInputEvent_getType(event) != AINPUT_EVENT_TYPE_KEY || !state.onKeyboardEvent) {
     return 0;
   }
@@ -203,7 +330,7 @@ static struct {
   bool attached;
   int handles[2];
   pthread_t thread;
-} log;
+} thread_log;
 
 static void* log_main(void* data) {
   int* fd = data;
@@ -222,10 +349,10 @@ static void* log_main(void* data) {
 }
 
 void os_open_console(void) {
-  if (!log.attached) {
-    pthread_create(&log.thread, NULL, log_main, log.handles);
-    pthread_detach(log.thread);
-    log.attached = true;
+  if (!thread_log.attached) {
+    pthread_create(&thread_log.thread, NULL, log_main, thread_log.handles);
+    pthread_detach(thread_log.thread);
+    thread_log.attached = true;
   }
 }
 
@@ -304,6 +431,48 @@ void os_thread_detach(void) {
 
 void os_poll_events(void) {
   if (!state.app->destroyRequested) {
+
+    ASensorEvent event;
+    while (ASensorEventQueue_getEvents(state.sensor_event_queue, &event, 1) > 0) {
+      switch (event.type) {
+        case ASENSOR_TYPE_ACCELEROMETER: {
+          CustomEvent eventData;
+          strncpy(eventData.name, "accel", MAX_EVENT_NAME_LENGTH - 1);
+          eventData.count = 3;
+          eventData.data[0].type = TYPE_NUMBER;
+          eventData.data[1].type = TYPE_NUMBER;
+          eventData.data[2].type = TYPE_NUMBER;
+          eventData.data[0].value.number = event.vector.x;
+          eventData.data[1].value.number = event.vector.y;
+          eventData.data[2].value.number = event.vector.z;
+          lovrEventPush((Event) {
+            .type = EVENT_CUSTOM,
+            .data.custom = eventData
+          });
+          break;
+        }
+        case ASENSOR_TYPE_GYROSCOPE: {
+          CustomEvent eventData;
+          strncpy(eventData.name, "gyro", MAX_EVENT_NAME_LENGTH - 1);
+          eventData.count = 3;
+          eventData.data[0].type = TYPE_NUMBER;
+          eventData.data[1].type = TYPE_NUMBER;
+          eventData.data[2].type = TYPE_NUMBER;
+          eventData.data[0].value.number = event.vector.x;
+          eventData.data[1].value.number = event.vector.y;
+          eventData.data[2].value.number = event.vector.z;
+          lovrEventPush((Event) {
+            .type = EVENT_CUSTOM,
+            .data.custom = eventData
+          });
+          break;
+        }
+        default: {
+          break;
+        }
+      }
+    }
+
     struct android_poll_source* source;
     int timeout = (state.app->window && state.app->activityState == APP_CMD_RESUME) ? 0 : -1;
     ALooper_pollOnce(timeout, NULL, NULL, (void**) &source);
@@ -351,19 +520,57 @@ void os_on_permission(fn_permission* callback) {
 }
 
 bool os_window_open(const os_window_config* config) {
-  return true;
+  ASensorManager *sensor_manager;
+  const ASensor *accelerometer;
+  const ASensor *gyroscope;
+  #if __ANDROID_API__ >= 26
+    sensor_manager = ASensorManager_getInstanceForPackage("org.lovr.app");
+  #else
+    sensor_manager = ASensorManager_getInstance();
+  #endif
+
+  ALooper *looper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
+  state.sensor_event_queue = ASensorManager_createEventQueue(sensor_manager,
+    looper, 0,
+    NULL, NULL);
+  accelerometer = ASensorManager_getDefaultSensor(sensor_manager, ASENSOR_TYPE_ACCELEROMETER);
+  gyroscope = ASensorManager_getDefaultSensor(sensor_manager, ASENSOR_TYPE_GYROSCOPE);
+  int32_t acc_min_delay =  1e6 / 60;  // in microseconds
+  int32_t gyro_min_delay = 1e6 / 60;
+  if (!sensor_manager) {
+    __android_log_write(ANDROID_LOG_DEBUG, "LOVR", "Failed to get a sensor manager");
+    return NULL;
+  }
+  if (accelerometer == NULL) {
+    __android_log_write(ANDROID_LOG_DEBUG, "LOVR", "Failed to get a accel sensor");
+  } else {
+    ASensorEventQueue_enableSensor(state.sensor_event_queue, accelerometer);
+    ASensorEventQueue_setEventRate(state.sensor_event_queue, accelerometer, acc_min_delay);
+  }
+  if (gyroscope == NULL) {
+    __android_log_write(ANDROID_LOG_DEBUG, "LOVR", "Failed to get a gyro sensor");
+  } else {
+    ASensorEventQueue_enableSensor(state.sensor_event_queue, gyroscope);
+    ASensorEventQueue_setEventRate(state.sensor_event_queue, gyroscope, gyro_min_delay);
+  }
+  return state.is_window_open;
 }
 
 bool os_window_is_open(void) {
-  return false;
+  return state.is_window_open;
+}
+
+uintptr_t os_get_android_window() {
+  return (uintptr_t) state.app->window;
 }
 
 void os_window_get_size(uint32_t* width, uint32_t* height) {
-  *width = *height = 0;
+  *width = state.width;
+  *height = state.height;
 }
 
 float os_window_get_pixel_density(void) {
-  return 0.f;
+  return 1.f;
 }
 
 size_t os_get_home_directory(char* buffer, size_t size) {

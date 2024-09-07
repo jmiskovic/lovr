@@ -18,8 +18,10 @@
 #define VK_USE_PLATFORM_XCB_KHR
 #endif
 
+#define VK_USE_PLATFORM_ANDROID_KHR
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+#include <vulkan/vulkan_android.h>
 
 // Objects
 
@@ -775,6 +777,18 @@ bool gpu_surface_init(gpu_surface_info* info) {
   GPU_DECLARE(vkCreateXcbSurfaceKHR);
   GPU_LOAD_INSTANCE(vkCreateXcbSurfaceKHR);
   VK(vkCreateXcbSurfaceKHR(state.instance, &surfaceInfo, NULL, &surface->handle), "vkCreateXcbSurfaceKHR") {
+    return false;
+  }
+#elif defined(__ANDROID__)
+  VkAndroidSurfaceCreateInfoKHR surfaceInfo = {
+    .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+    .pNext = NULL,
+    .flags = 0,
+    .window = (struct ANativeWindow*) info->android.window
+  };
+  GPU_DECLARE(vkCreateAndroidSurfaceKHR);
+  GPU_LOAD_INSTANCE(vkCreateAndroidSurfaceKHR);
+  VK(vkCreateAndroidSurfaceKHR(state.instance, &surfaceInfo, NULL, &surface->handle), "vkCreateAndroidSurfaceKHR") {
     return false;
   }
 #endif
@@ -2302,6 +2316,7 @@ bool gpu_init(gpu_config* config) {
       { "VK_EXT_debug_utils", config->debug, &state.extensions.debug },
       { "VK_EXT_swapchain_colorspace", true, &state.extensions.colorspace },
       { "VK_KHR_surface", true, &state.extensions.surface },
+      { "VK_KHR_android_surface", true, &state.extensions.surfaceOS },
 #if defined(_WIN32)
       { "VK_KHR_win32_surface", true, &state.extensions.surfaceOS },
 #elif defined(__APPLE__)
