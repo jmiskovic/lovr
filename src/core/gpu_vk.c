@@ -178,6 +178,7 @@ typedef struct {
   bool formatList;
   bool renderPass2;
   bool synchronization2;
+  bool synchronization2layer;
 } gpu_extensions;
 
 // State
@@ -2289,7 +2290,8 @@ bool gpu_init(gpu_config* config) {
 
   { // Layers
     struct { const char* name; bool shouldEnable; bool* flag; } layers[] = {
-      { "VK_LAYER_KHRONOS_validation", config->debug, &state.extensions.validation }
+      { "VK_LAYER_KHRONOS_validation", config->debug, &state.extensions.validation },
+      { "VK_LAYER_KHRONOS_synchronization2", true, &state.extensions.synchronization2layer }
     };
 
     uint32_t layerCount = 0;
@@ -2381,6 +2383,9 @@ bool gpu_init(gpu_config* config) {
 
         if (!state.extensions.validation) {
           LOG("Warning: GPU debugging is enabled, but validation layer is not installed");
+        }
+        if (!state.extensions.synchronization2layer) {
+          LOG("Warning: VK_LAYER_KHRONOS_synchronization2 is enabled, but synchronization2 layer is not installed");
         }
       } else {
         LOG("Warning: GPU debugging is enabled, but debug extension is not supported");

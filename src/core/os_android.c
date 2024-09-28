@@ -23,6 +23,9 @@ static struct {
   bool is_window_open;
   uint32_t width;
   uint32_t height;
+  unsigned touch_count;
+  fn_mouse_button* onMouseButton;
+  fn_mouse_move* onMouseMove;
 } state;
 
 static void onAppCmd(struct android_app* app, int32_t cmd) {
@@ -32,11 +35,11 @@ static void onAppCmd(struct android_app* app, int32_t cmd) {
       state.is_window_open = true;
       state.width = ANativeWindow_getWidth(app->window);
       state.height = ANativeWindow_getHeight(app->window);
+      __android_log_write(ANDROID_LOG_DEBUG, "LOVR", "Received onAppCmd APP_CMD_INIT_WINDOW");
       break;
     case APP_CMD_TERM_WINDOW:
     case APP_CMD_DESTROY:
       // The window is being hidden or closed, clean it up.
-      __android_log_write(ANDROID_LOG_DEBUG, "LOVR", "onAppCmd APP_CMD_DESTROY");
       state.onQuit();
       break;
     default:
@@ -45,42 +48,26 @@ static void onAppCmd(struct android_app* app, int32_t cmd) {
 }
 
 static int handleTouch(struct android_app* app, AInputEvent* event) {
-  if (AInputEvent_getType(event) == AINPUT_EVENT_TYPE_MOTION) {
-    size_t pointer_count = AMotionEvent_getPointerCount(event);
-    int32_t action = AMotionEvent_getAction(event);
-    int32_t pointer_index = action >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
-    int32_t pointer_id = AMotionEvent_getPointerId(event, pointer_index);
-    /*
-      The pointer index of each pointer in the event ranges from 0 to one less than
-      the value returned by getPointerCount().
+    if (AInputEvent_getType(event) != AINPUT_EVENT_TYPE_MOTION) {
+        return 0;
+    }
 
-      The order in which individual pointers appear within a motion event is
-      undefined. Thus the pointer index of a pointer can change from one event to
-      the next but the pointer id of a pointer is guaranteed to remain constant as
-      long as the pointer remains active. Use the getPointerId(int) method to
-      obtain the pointer id of a pointer to track it across all subsequent motion
-      events in a gesture. Then for successive motion events, use the
-      findPointerIndex(int) method to obtain the pointer index for a given pointer
-      id in that motion event.
-    */
+    int32_t action = AMotionEvent_getAction(event);
+    int32_t flags = action & AMOTION_EVENT_ACTION_MASK;
     CustomEvent eventData;
 
-    switch (action & AMOTION_EVENT_ACTION_MASK)
-    {
-        case AMOTION_EVENT_ACTION_SCROLL:{
-          break;
-        }
-        // case AMOTION_EVENT_ACTION_HOVER_MOVE:
-        case AMOTION_EVENT_ACTION_MOVE:{
-          strncpy(eventData.name, "touchmoved", MAX_EVENT_NAME_LENGTH - 1);
-          for (int i = 0; i < pointer_count; i++) {
-            int32_t pointer_id = AMotionEvent_getPointerId(event, i);
-            float x = AMotionEvent_getX(event, i);
-            float y = AMotionEvent_getY(event, i);
+    switch (flags) {
+        case AMOTION_EVENT_ACTION_DOWN: {
+            // First contact, data is always at index 0
+            int32_t slot = AMotionEvent_getPointerId(event, 0);
+            float x = AMotionEvent_getX(event, 0);
+            float y = AMotionEvent_getY(event, 0);
             float size = AMotionEvent_getSize(event, 0);
+
+            strncpy(eventData.name, "touchpressed", MAX_EVENT_NAME_LENGTH - 1);
             eventData.count = 4;
             eventData.data[0].type = TYPE_NUMBER;
-            eventData.data[0].value.number = pointer_id;
+            eventData.data[0].value.number = slot;
             eventData.data[1].type = TYPE_NUMBER;
             eventData.data[1].value.number = x;
             eventData.data[2].type = TYPE_NUMBER;
@@ -88,62 +75,125 @@ static int handleTouch(struct android_app* app, AInputEvent* event) {
             eventData.data[3].type = TYPE_NUMBER;
             eventData.data[3].value.number = size;
             lovrEventPush((Event) {
-              .type = EVENT_CUSTOM,
-              .data.custom = eventData
+                .type = EVENT_CUSTOM,
+                .data.custom = eventData
             });
-          }
-          return 1;
+            if (state.onMouseButton) {
+                state.onMouseButton(0, true);
+            }
+            return 1;
+        }
+        case AMOTION_EVENT_ACTION_POINTER_DOWN: {
+            int32_t pointer_index = (action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK)
+                                  >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+            int32_t slot = AMotionEvent_getPointerId(event, pointer_index);
+            float x = AMotionEvent_getX(event, pointer_index);
+            float y = AMotionEvent_getY(event, pointer_index);
+            float size = AMotionEvent_getSize(event, pointer_index);
+
+            strncpy(eventData.name, "touchpressed", MAX_EVENT_NAME_LENGTH - 1);
+            eventData.count = 4;
+            eventData.data[0].type = TYPE_NUMBER;
+            eventData.data[0].value.number = slot;
+            eventData.data[1].type = TYPE_NUMBER;
+            eventData.data[1].value.number = x;
+            eventData.data[2].type = TYPE_NUMBER;
+            eventData.data[2].value.number = y;
+            eventData.data[3].type = TYPE_NUMBER;
+            eventData.data[3].value.number = size;
+
+            lovrEventPush((Event) {
+                .type = EVENT_CUSTOM,
+                .data.custom = eventData
+            });
+            return 1;
         }
 
-        case AMOTION_EVENT_ACTION_POINTER_DOWN:
-        case AMOTION_EVENT_ACTION_DOWN:
-        {
-          strncpy(eventData.name, "touchpressed", MAX_EVENT_NAME_LENGTH - 1);
-          float x = AMotionEvent_getX(event, 0);
-          float y = AMotionEvent_getY(event, 0);
-          float size = AMotionEvent_getSize(event, 0);
-          eventData.count = 4;
-          eventData.data[0].type = TYPE_NUMBER;
-          eventData.data[0].value.number = pointer_id;
-          eventData.data[1].type = TYPE_NUMBER;
-          eventData.data[1].value.number = x;
-          eventData.data[2].type = TYPE_NUMBER;
-          eventData.data[2].value.number = y;
-          eventData.data[3].type = TYPE_NUMBER;
-          eventData.data[3].value.number = size;
-          lovrEventPush((Event) {
-            .type = EVENT_CUSTOM,
-            .data.custom = eventData
-          });
-          return 1;
+        case AMOTION_EVENT_ACTION_MOVE: {
+            size_t pointer_count = AMotionEvent_getPointerCount(event);
+            strncpy(eventData.name, "touchmoved", MAX_EVENT_NAME_LENGTH - 1);
+            eventData.count = 4;
+
+            // Handle all active pointers in the event
+            for (size_t i = 0; i < pointer_count; i++) {
+                int32_t slot = AMotionEvent_getPointerId(event, i);
+                float x = AMotionEvent_getX(event, i);
+                float y = AMotionEvent_getY(event, i);
+                float size = AMotionEvent_getSize(event, i);
+
+                eventData.data[0].type = TYPE_NUMBER;
+                eventData.data[0].value.number = slot;  // Use slot instead of index
+                eventData.data[1].type = TYPE_NUMBER;
+                eventData.data[1].value.number = x;
+                eventData.data[2].type = TYPE_NUMBER;
+                eventData.data[2].value.number = y;
+                eventData.data[3].type = TYPE_NUMBER;
+                eventData.data[3].value.number = size;
+
+                lovrEventPush((Event) {
+                    .type = EVENT_CUSTOM,
+                    .data.custom = eventData
+                });
+            }
+            if (state.onMouseMove) {
+                state.onMouseMove(AMotionEvent_getX(event, 0), AMotionEvent_getY(event, 0));
+            }
+            return 1;
+        }
+        case AMOTION_EVENT_ACTION_UP: {
+            // Last contact lifted, data is always at index 0
+            int32_t slot = AMotionEvent_getPointerId(event, 0);
+            float x = AMotionEvent_getX(event, 0);
+            float y = AMotionEvent_getY(event, 0);
+            float size = AMotionEvent_getSize(event, 0);
+
+            strncpy(eventData.name, "touchreleased", MAX_EVENT_NAME_LENGTH - 1);
+            eventData.count = 4;
+            eventData.data[0].type = TYPE_NUMBER;
+            eventData.data[0].value.number = slot;
+            eventData.data[1].type = TYPE_NUMBER;
+            eventData.data[1].value.number = x;
+            eventData.data[2].type = TYPE_NUMBER;
+            eventData.data[2].value.number = y;
+            eventData.data[3].type = TYPE_NUMBER;
+            eventData.data[3].value.number = size;
+            lovrEventPush((Event) {
+                .type = EVENT_CUSTOM,
+                .data.custom = eventData
+            });
+            if (state.onMouseButton) {
+                state.onMouseButton(0, false);
+            }
+            return 1;
         }
 
-        case AMOTION_EVENT_ACTION_POINTER_UP:
-        case AMOTION_EVENT_ACTION_UP:
-        // case AMOTION_EVENT_ACTION_CANCEL:
-        {
-          strncpy(eventData.name, "touchreleased", MAX_EVENT_NAME_LENGTH - 1);
-          float x = AMotionEvent_getX(event, 0);
-          float y = AMotionEvent_getY(event, 0);
-          float size = AMotionEvent_getSize(event, 0);
-          eventData.count = 4;
-          eventData.data[0].type = TYPE_NUMBER;
-          eventData.data[0].value.number = pointer_id;
-          eventData.data[1].type = TYPE_NUMBER;
-          eventData.data[1].value.number = x;
-          eventData.data[2].type = TYPE_NUMBER;
-          eventData.data[2].value.number = y;
-          eventData.data[3].type = TYPE_NUMBER;
-          eventData.data[3].value.number = size;
-          lovrEventPush((Event) {
-            .type = EVENT_CUSTOM,
-            .data.custom = eventData
-          });
-          return 1;
+        case AMOTION_EVENT_ACTION_POINTER_UP: {
+            int32_t pointer_index = (action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK)
+                                  >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+            int32_t slot = AMotionEvent_getPointerId(event, pointer_index);
+            float x = AMotionEvent_getX(event, pointer_index);
+            float y = AMotionEvent_getY(event, pointer_index);
+            float size = AMotionEvent_getSize(event, pointer_index);
+
+            strncpy(eventData.name, "touchreleased", MAX_EVENT_NAME_LENGTH - 1);
+            eventData.count = 4;
+            eventData.data[0].type = TYPE_NUMBER;
+            eventData.data[0].value.number = slot;
+            eventData.data[1].type = TYPE_NUMBER;
+            eventData.data[1].value.number = x;
+            eventData.data[2].type = TYPE_NUMBER;
+            eventData.data[2].value.number = y;
+            eventData.data[3].type = TYPE_NUMBER;
+            eventData.data[3].value.number = size;
+
+            lovrEventPush((Event) {
+                .type = EVENT_CUSTOM,
+                .data.custom = eventData
+            });
+            return 1;
         }
     }
-  }
-  return 0;
+    return 0;
 }
 
 
@@ -283,6 +333,7 @@ static int32_t onInputEvent(struct android_app* app, AInputEvent* event) {
 int main(int argc, char** argv);
 
 void android_main(struct android_app* app) {
+  state.touch_count = 0;
   state.app = app;
   (*app->activity->vm)->AttachCurrentThread(app->activity->vm, &state.jni, NULL);
   os_open_console();
@@ -504,11 +555,11 @@ void os_on_text(fn_text* callback) {
 }
 
 void os_on_mouse_button(fn_mouse_button* callback) {
-  //
+  state.onMouseButton = callback;
 }
 
 void os_on_mouse_move(fn_mouse_move* callback) {
-  //
+  state.onMouseMove = callback;
 }
 
 void os_on_mousewheel_move(fn_mousewheel_move* callback) {
@@ -524,8 +575,10 @@ bool os_window_open(const os_window_config* config) {
   const ASensor *accelerometer;
   const ASensor *gyroscope;
   #if __ANDROID_API__ >= 26
+    __android_log_write(ANDROID_LOG_DEBUG, "LOVR", "API >= 26");
     sensor_manager = ASensorManager_getInstanceForPackage("org.lovr.app");
   #else
+    __android_log_write(ANDROID_LOG_DEBUG, "LOVR", "API < 26");
     sensor_manager = ASensorManager_getInstance();
   #endif
 
@@ -553,7 +606,15 @@ bool os_window_open(const os_window_config* config) {
     ASensorEventQueue_enableSensor(state.sensor_event_queue, gyroscope);
     ASensorEventQueue_setEventRate(state.sensor_event_queue, gyroscope, gyro_min_delay);
   }
-  return state.is_window_open;
+  int i= 0;
+  while(!state.is_window_open && i < 100) {
+    os_sleep(0.02);
+    os_poll_events();
+    __android_log_write(ANDROID_LOG_DEBUG, "LOVR", "waiting for window open");
+    i++;
+  };
+
+  return true;
 }
 
 bool os_window_is_open(void) {
