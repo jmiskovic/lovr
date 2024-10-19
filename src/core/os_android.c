@@ -5,10 +5,10 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include "event/event.h"
 #include <android/looper.h>
 #include <android/sensor.h>
-
 // This is probably bad, but makes things easier to build
 #include <android_native_app_glue.c>
 
@@ -339,6 +339,17 @@ void android_main(struct android_app* app) {
   os_open_console();
   app->onAppCmd = onAppCmd;
   app->onInputEvent = onInputEvent;
+
+    jobject activity = state.app->activity->clazz;
+    jclass class = (*state.jni)->GetObjectClass(state.jni, activity);
+    jmethodID requestExternalStoragePermission = (*state.jni)->GetMethodID(state.jni, class, "requestExternalStoragePermission", "()V");
+    if (!requestExternalStoragePermission) {
+      (*state.jni)->DeleteLocalRef(state.jni, class);
+      if (state.onPermissionEvent) state.onPermissionEvent(OS_PERMISSION_EXTERNAL_STORAGE, false);
+      return;
+    }
+    (*state.jni)->CallVoidMethod(state.jni, activity, requestExternalStoragePermission);
+
   main(0, NULL);
   (*app->activity->vm)->DetachCurrentThread(app->activity->vm);
 }
@@ -442,8 +453,18 @@ void os_request_permission(os_permission permission) {
       if (state.onPermissionEvent) state.onPermissionEvent(OS_PERMISSION_AUDIO_CAPTURE, false);
       return;
     }
-
     (*state.jni)->CallVoidMethod(state.jni, activity, requestAudioCapturePermission);
+  }
+  if (permission == OS_PERMISSION_EXTERNAL_STORAGE) {
+    jobject activity = state.app->activity->clazz;
+    jclass class = (*state.jni)->GetObjectClass(state.jni, activity);
+    jmethodID requestExternalStoragePermission = (*state.jni)->GetMethodID(state.jni, class, "requestExternalStoragePermission", "()V");
+    if (!requestExternalStoragePermission) {
+      (*state.jni)->DeleteLocalRef(state.jni, class);
+      if (state.onPermissionEvent) state.onPermissionEvent(OS_PERMISSION_EXTERNAL_STORAGE, false);
+      return;
+    }
+    (*state.jni)->CallVoidMethod(state.jni, activity, requestExternalStoragePermission);
   }
 }
 
@@ -662,6 +683,18 @@ size_t os_get_executable_path(char* buffer, size_t size) {
 }
 
 size_t os_get_bundle_path(char* buffer, size_t size, const char** root) {
+  const char* customPath = "/sdcard/lovrproj01";
+  // Check if the custom path exists
+  struct stat st;
+  if (stat(customPath, &st) == 0 && S_ISDIR(st.st_mode)) {
+    size_t length = strlen(customPath);
+    if (length >= size) return 0;
+    memcpy(buffer, customPath, length);
+    buffer[length] = '\0';
+    *root = "";
+    return length;
+  }
+  // Fallback to the original implementation
   jobject activity = state.app->activity->clazz;
   jclass class = (*state.jni)->GetObjectClass(state.jni, activity);
   jmethodID getPackageCodePath = (*state.jni)->GetMethodID(state.jni, class, "getPackageCodePath", "()Ljava/lang/String;");

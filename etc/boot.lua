@@ -58,15 +58,16 @@ local conf = {
 function lovr.boot()
   lovr.filesystem = require('lovr.filesystem')
 
-  -- See if there's a ZIP archive fused to the executable, and set up the fused CLI if it exists
-
   local bundle, root = lovr.filesystem.getBundlePath()
+  local customPath = '/sdcard/lovrproj01'
   local fused = bundle and lovr.filesystem.mount(bundle, nil, true, root)
+
+  -- Try to mount the custom path on the external storage
+  local customMounted = lovr.filesystem.mount(customPath)
+
   local cli = lovr.filesystem.isFile('arg.lua') and assert(pcall(require, 'arg')) and lovr.arg and lovr.arg(arg)
 
-  -- Implement a barebones CLI if there is no bundled CLI/project
-
-  if not fused then
+  if not customMounted and not fused then
     if arg[1] and not arg[1]:match('^%-') then
       for i = 0, #arg do
         arg[i - 1], arg[i] = arg[i], nil
@@ -82,10 +83,12 @@ function lovr.boot()
     end
   end
 
-  -- Figure out source archive and main module.  CLI places source at arg[0]
-
+  -- Determine the source and main module
   local source, main
-  if (cli or not fused) and arg[0] then
+  if customMounted then
+    source = customPath
+    main = 'main.lua'
+  elseif (cli or not fused) and arg[0] then
     if arg[0]:match('[^/\\]+%.lua$') then
       source = arg[0]:match('[/\\]') and arg[0]:match('(.+)[/\\][^/\\]+$') or '.'
       main = arg[0]:match('[^/\\]+%.lua$')
@@ -98,8 +101,7 @@ function lovr.boot()
     main = 'main.lua'
   end
 
-  -- Mount source archive, make sure it's got the main file, and load conf.lua
-
+  -- Mount source archive, verify main file, and load configuration
   local ok, failure = true, nil
   if source ~= bundle and not lovr.filesystem.mount(source) then
     ok, failure = false, ('Failed to load project at %q\nMake sure the path or archive is valid.'):format(source)
@@ -114,6 +116,7 @@ function lovr.boot()
 
   lovr._setConf(conf)
   lovr.filesystem.setIdentity(conf.identity, conf.saveprecedence)
+
 
   -- CLI gets a chance to use/modify conf and handle arguments
 
